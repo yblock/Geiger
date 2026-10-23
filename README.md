@@ -10,7 +10,8 @@ A logger and dashboard for a GQ GMC-320S Geiger counter, built on
 It's made for a counter that lives away from the Mac and records on its own. Plug it in
 now and then to watch live background levels and copy everything it recorded since the
 last visit. Each session adds to one database on the Mac, so the dashboard shows your full
-history whether or not the counter is connected.
+history whether or not the counter is connected. While it's plugged in, you can also check
+how full its memory is and change its settings from the dashboard instead of its buttons.
 
 ## What you need
 
@@ -77,17 +78,19 @@ shows "Counter not connected" above everything you've already collected.
 
 ## Before leaving the counter on its own
 
-- **Its save setting decides what you get back.** The dashboard's Counter panel shows it as
-  "Counter's own log". You can change it on the counter itself.
+- **Its save setting decides what you get back.** Change it under **Counter settings →
+  Save to memory** on the dashboard, or on the counter itself.
   - Every second gives the most detail, and is how this counter is set now. It fills the
     1 MB memory in roughly 11 days.
   - Every minute lasts about 60 times longer.
   - Hourly average lasts longer still, at hour resolution.
   - The "above threshold" modes are not imported, because they only record now and then
     and their timestamps can't be trusted.
-- **Its memory is never erased.** pygmc has no command to clear the counter's history, so
-  every sync re-reads it from the start and keeps only what's new. What the counter does
-  when its memory fills hasn't been tested, so sync before it gets there.
+- **Its memory is a ring buffer.** Once full, the counter overwrites its oldest records, so
+  sync before then. The **Counter memory** panel shows how much room is left at the
+  current setting. Syncing never erases anything: each sync re-reads the memory and keeps
+  only what's new. Erasing is only possible from the counter's own menu, described in that
+  panel.
 - **Its clock is kept for you.** The counter has no time zone or daylight saving. The logger
   resets its clock on each connection, and readings recorded under the old clock still get
   their correct times. Pass `--no-set-clock` to leave the clock alone; imported times are
@@ -170,7 +173,39 @@ It's a rough guide, not safety advice.
 - **Sync device history** copies new records on demand while the counter is connected.
   Next to it is the result of the last sync.
 - Below that are the counter's firmware, serial number, connection, battery voltage, clock
-  status, calibration, save setting, alarm, and how far back the stored history goes.
+  status, calibration, alarm, and how far back the stored history goes.
+
+### Counter memory
+
+- **What's on the counter:** how full its memory is, how many records it holds and the
+  dates they span, all as of the last sync.
+- **How long it lasts:** the time left before it starts overwriting its oldest records at
+  the current save setting. If it has already wrapped, how much time it holds, so you know
+  how often to sync.
+- **Downloads:** every record it held at the last sync, as a CSV with times, counts, CPM
+  and µSv/h, or as a raw memory backup (`.bin`).
+- **Erasing:** USB can only read the memory, so the panel gives the menu steps for erasing
+  it on the counter, and says whether everything on it is already stored on the Mac.
+
+### Counter settings
+
+The same options as the counter's own menus, read from the counter when it connects:
+
+| Group | Settings |
+|---|---|
+| Sound and alarm | Speaker, LED, alarm on/off, whether it triggers on CPM or µSv/h, and the level |
+| Data saving | What it saves to memory (off, every second/minute/hour, or above a threshold), and the threshold |
+| Display and power | Contrast, backlight level and timer, what large-font mode shows, power saving, motion detection, screen rotation, reverse display, battery type |
+| Calibration | The three CPM ↔ µSv/h points behind every dose-rate reading |
+
+Change any of them, then **Save to counter**. Nothing reaches the counter until you save,
+and only the settings you changed are written. **Read from counter** picks up anything
+changed with its buttons since it connected. Saving pauses the live reading for about five
+seconds. The counter records those seconds in its own memory, so nothing is lost.
+
+Contrast and backlight level are limited to the ranges the counter's own menu allows (10–40
+and 0–10), so the screen can't be set too faint or dark to read. Baud rate is left out,
+because changing it would cut the USB connection. The clock is kept in step automatically.
 
 The page follows your system's light or dark mode and works on a phone. To reach it from
 other devices on your network, run `uv run geiger run --host 0.0.0.0`. There's no login,
@@ -238,8 +273,11 @@ copy the file while the logger isn't running. Its three tables:
 - `counts`: one row per recorded interval (start, seconds, counts, live or from the
   counter's memory).
 - `minutes`: a per-minute rollup that SQLite triggers keep in step.
-- `meta`: the counter's details, calibration, measured clock offsets, and the last sync
-  result.
+- `meta`: the counter's details, settings, a record of the last settings change (old and
+  new block), calibration, measured clock offsets, and the last sync result.
+
+Next to it, `data/counter-memory.bin` is the counter's memory exactly as read at the last
+sync.
 
 ## How it works
 
@@ -255,12 +293,35 @@ copy the file while the logger isn't running. Its three tables:
   imported. A margin of about 2 seconds is left where live and copied data meet.
 - **Rates** are always `60 × counts ÷ seconds recorded`, so partial minutes and mixed
   resolutions (seconds, minutes, hours) average correctly.
+- **The counter's memory is a ring buffer.** Until it first fills, reading stops at the
+  first blank page. Once it has wrapped, its last page holds data. Then every page is read,
+  and the newest and oldest stretches, separated by the erased gap the counter keeps just
+  ahead of where it writes, are parsed separately.
+- **Settings** live in a 256-byte block. GQ's protocol only lets you erase the whole block
+  and rewrite it byte by byte, so a save goes like this:
+  1. Read the current block.
+  2. Change only the edited fields; every other byte is written back exactly as read,
+     including ones whose meaning isn't known.
+  3. Record both the old and new blocks in the database.
+  4. Erase, rewrite, and apply.
+  5. Read the block back and compare it, retrying once if needed.
+  6. Mark the record done.
+
+  If a save is ever cut short, say by unplugging mid-save, the open record is settled
+  straight away or at the next connect. If the new block fully landed, it's applied once
+  more; otherwise the old block is put back. This has happened on real hardware and worked.
+  The layout comes from GQ's firmware and was checked field by field against this
+  counter ([geiger/settings.py](geiger/settings.py)).
 
 The GMC-320S has quirks that the code works around; they're documented at the top of
 [geiger/device.py](geiger/device.py):
 - It ignores a command sent right after another.
+- It sometimes ignores "stop heartbeat" and keeps streaming, so stopping waits for a
+  second of silence and resends until it gets one.
 - Its history pages carry a stray extra byte. pygmc's own reader sometimes misaligns on it.
 - The top bits of its heartbeat words are status flags.
+- About a second after a settings change, it rewrites a few bytes of the block itself: its
+  power state, its highest CPM, and a "last saved" timestamp.
 
 ### API
 
@@ -273,7 +334,14 @@ The dashboard is a static page over a small local API:
 | `GET /api/recent?seconds=` | Per-second counts for the last few minutes |
 | `GET /api/events` | Server-sent events: `reading` each second, `status` on changes |
 | `GET /api/export.csv?start=&end=` | Per-minute counts, CPM, and µSv/h |
-| `POST /api/sync` | Start copying the counter's records (needs header `X-Geiger: 1`) |
+| `GET /api/settings` | The counter's settings, as last read |
+| `GET /api/counter-memory.csv` | Every record in the counter's memory at the last sync |
+| `GET /api/counter-memory.bin` | The raw memory image from the last sync |
+| `POST /api/sync` | Start copying the counter's records |
+| `POST /api/settings` | Write `{"changes": {setting: value}}` to the counter; returns its settings afterward |
+| `POST /api/settings/refresh` | Read the settings from the counter again |
+
+POST requests need the header `X-Geiger: 1`, so other web pages can't send them.
 
 ## Development
 
@@ -295,9 +363,14 @@ node scripts/readme-image/make.mjs
 | `geiger/device.py` | Serial access through pygmc, and the device quirks |
 | `geiger/logger.py` | The worker thread: live stream, backfill, clock setting |
 | `geiger/history.py` | Parsing the counter's memory and mapping its clock to real time |
+| `geiger/settings.py` | The counter's settings layout, validation, and safe edits |
 | `geiger/store.py` | SQLite schema, gap-only import, chart series and stats |
 | `geiger/calibration.py` | CPM to µSv/h, matching pygmc's conversion |
 | `geiger/demo.py` | The simulated counter and made-up history behind `geiger demo` |
 | `geiger/server.py`, `geiger/cli.py` | HTTP API and command line |
 | `geiger/static/` | The dashboard (plain HTML, CSS and JavaScript, no build step) |
 | `scripts/readme-image/` | Generates `docs/dashboard.png` |
+
+## License
+
+[MIT](LICENSE). Built on [pygmc](https://github.com/Wikilicious/pygmc), also MIT.

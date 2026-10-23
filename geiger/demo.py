@@ -13,8 +13,9 @@ import math
 import random
 import time
 
-from .device import DeviceInfo
-from .logger import CONFIG_KEYS, local_utc_offset
+from . import settings
+from .device import DeviceInfo, Flash
+from .logger import local_utc_offset, remember_settings
 from .store import Store
 
 BASE_CPM = 15.8
@@ -27,18 +28,22 @@ INFO = DeviceInfo(
     port="/dev/cu.usbserial-110",
     baudrate=115200,
 )
-CONFIG = {
-    "Alarm": 1,
-    "AlarmValue_uSv": 0.5,
-    "Speaker": 0,
-    "SaveDataType": 2,  # every minute
-    "CalibrationCPM_0": 1538,
-    "Calibration_uSv_0": 10.0,
-    "CalibrationCPM_1": 15380,
-    "Calibration_uSv_1": 100.0,
-    "CalibrationCPM_2": 30760,
-    "Calibration_uSv_2": 200.0,
-}
+
+def _settings_block() -> bytes:
+    blank = bytearray(b"\xff" * settings.SIZE)
+    blank[0] = 0  # power on
+    blank[57] = 254  # 115200 baud
+    return settings.encode(bytes(blank), {
+        "speaker": 0, "led": 1, "alarm": 1, "alarm_type": 1, "alarm_cpm": 100, "alarm_usv": 0.5,
+        "save_mode": 2, "threshold_type": 0, "threshold_cpm": 100, "threshold_usv": 0.5,
+        "power_saving": 0, "motion_detect": 1, "swivel": 2, "reverse_display": 0, "battery": 0,
+        "contrast": 21, "backlight_level": 4, "backlight_timer": 1, "large_font_unit": 2,
+        "cal_cpm_0": 1538, "cal_usv_0": 10.0, "cal_cpm_1": 15380, "cal_usv_1": 100.0,
+        "cal_cpm_2": 30760, "cal_usv_2": 200.0,
+    })
+
+
+SETTINGS = _settings_block()
 
 # rain events: (days ago, local hour it starts, extra fraction at peak, hours it lasts)
 RAIN = [(27, 3, 0.55, 2), (21, 16, 0.35, 1), (11, 22, 0.8, 3), (6, 5, 0.4, 1.5), (2, 14, 0.65, 2)]
@@ -90,10 +95,10 @@ def poisson(rng: random.Random, lam: float) -> int:
     return k
 
 
-def seed(store: Store, days: int = DAYS, seed: int = 320) -> None:
-    """Fill an empty store with `days` of history ending now."""
+def seed(store: Store, days: int = DAYS, seed: int = 320, now: int | None = None) -> None:
+    """Fill an empty store with `days` of history ending `now` (default: the current time)."""
     rng = random.Random(seed)
-    now = int(time.time())
+    now = int(time.time()) if now is None else now
     bumps = _bumps(now)
     off_start = _local(SWITCHED_OFF[0], SWITCHED_OFF[1])
     off_end = off_start + SWITCHED_OFF[2] * 3600
@@ -110,15 +115,18 @@ def seed(store: Store, days: int = DAYS, seed: int = 320) -> None:
     store.import_intervals(rows)
 
     store.set_meta("device", INFO.to_dict())
-    store.set_meta("config", {k: CONFIG[k] for k in CONFIG_KEYS})
-    store.set_meta("calibration", {"points": [[1538, 10.0], [15380, 100.0], [30760, 200.0]]})
+    remember_settings(store, SETTINGS)
     last_visit = now - 5 * 86400
+    used = round(len(rows) * 1.07)  # about a byte a record, plus timestamps
     store.set_meta(
         "last_sync",
         {
             "at": now - 20,
             "duration": 3.1,
-            "bytes": 2048 * 21,
+            "bytes": 0,  # no memory image to download in the demo
+            "used": used,
+            "capacity": 2**20,
+            "wrapped": False,
             "records": len(rows),
             "imported": sum(1 for r in rows if r[0] >= last_visit),
             "skipped": sum(1 for r in rows if r[0] < last_visit),
@@ -139,9 +147,14 @@ class DemoCounter:
         self._rng = random.Random()
         self._bumps = _bumps(time.time())
         self._next = time.time() + 1
+        self._settings = SETTINGS
 
-    def config(self) -> dict:
-        return dict(CONFIG)
+    def settings_raw(self) -> bytes:
+        return self._settings
+
+    def write_settings(self, new: bytes) -> None:
+        time.sleep(1)  # about as long as the real thing
+        self._settings = bytes(new)
 
     def voltage(self) -> float:
         return 4.1
@@ -170,8 +183,8 @@ class DemoCounter:
     def stop_heartbeat(self) -> None:
         pass
 
-    def read_history(self, progress=None) -> bytes:
-        return b""
+    def read_history(self, progress=None) -> Flash:
+        return Flash(b"", [], False, 0, self.flash_size)
 
     def close(self) -> None:
         pass

@@ -89,3 +89,18 @@ def test_two_byte_counts():
 
 def test_empty_flash():
     assert history_intervals(b"", OFFSETS) == ([], 0)
+
+
+def test_a_wrapped_memory_keeps_the_newest_stretch():
+    from geiger.history import split_segments
+
+    # memory order: the newest records (no timestamp of their own yet), the erased gap,
+    # then the oldest stretch, which ends just before the wrap
+    oldest = marker(START, 1) + bytes([1] * 2000)
+    newest = bytes([2] * 50)
+    # unwritten flash reads 0xFF; zeros before the oldest stretch are its older, cut-off part
+    image = newest.ljust(2048, b"\xff") + b"\xff" * 2048 + oldest.rjust(2 ** 20 - 4096, b"\x00")
+    rows, _ = history_intervals(split_segments(image), OFFSETS)
+    counts = [r[2] for r in rows]
+    assert counts[-50:] == [2] * 50  # carried on from the oldest stretch's timestamp
+    assert rows[-1][0] - rows[0][0] == len(rows) - 1  # one unbroken run of seconds

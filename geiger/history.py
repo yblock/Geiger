@@ -60,19 +60,57 @@ class ClockOffsets:
         return self.entries[-1][1]
 
 
+PAGE = 2048  # bytes per history page read from the counter
+
+
+def split_segments(image: bytes, page: int = PAGE) -> list[bytes]:
+    """Runs of data between blank (all 0xFF) pages of a memory image, in time order.
+
+    In a wrapped ring buffer the counter erases a little ahead of where it writes,
+    so the newest stretch (from the start of memory) and the oldest (up to its end)
+    are separated by blank pages. The recording runs on from the end of memory
+    straight into its start, so those two are joined, oldest first: that way the
+    newest stretch inherits the timestamp that precedes it instead of losing its
+    first records, and the record split across the wrap is whole again.
+    """
+    segments, current = [], bytearray()
+    for start in range(0, len(image), page):
+        chunk = image[start : start + page]
+        if chunk.count(0xFF) == len(chunk):
+            if current:
+                segments.append(bytes(current))
+            current = bytearray()
+        else:
+            current += chunk
+    if current:
+        segments.append(bytes(current))
+    first_page, last_page = image[:page], image[-page:]
+    wraps = len(segments) > 1 and first_page.count(0xFF) != page and last_page.count(0xFF) != page
+    if wraps:
+        segments = [*segments[1:-1], segments[-1] + segments[0]]
+    return segments
+
+
 def history_intervals(
-    raw: bytes, offsets: ClockOffsets, until: float | None = None
+    segments: bytes | list[bytes], offsets: ClockOffsets, until: float | None = None
 ) -> tuple[list[tuple[int, int, int]], int]:
-    """Parse raw flash history into (ts, seconds, count) rows.
+    """Parse flash history into (ts, seconds, count) rows.
+
+    `segments` are runs of memory between blank pages (see ``device.Flash``).
+    Each is parsed on its own, so a stretch that starts mid-record never borrows
+    the timestamp of the stretch before it.
 
     pygmc stamps each record with the end of its interval in counter time.
     Records ending after `until` are dropped. Hourly averages are spread over
     the hour's minutes so per-minute rollups and partial ranges stay correct.
     Returns (rows, records dropped).
     """
+    if isinstance(segments, bytes):
+        segments = [segments]
+    records = [r for seg in segments for r in pygmc.HistoryParser(data=seg).get_data()]
     rows = []
     dropped = 0
-    for when, value, _unit, mode, _ref, _note in pygmc.HistoryParser(data=raw).get_data():
+    for when, value, _unit, mode, _ref, _note in records:
         seconds = MODE_SECONDS.get(mode)
         counter_end = device_epoch(when)
         end = counter_end + offsets.at(counter_end)

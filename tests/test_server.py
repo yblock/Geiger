@@ -6,7 +6,8 @@ import urllib.request
 
 import pytest
 
-from geiger.logger import Hub
+from geiger import demo, settings
+from geiger.logger import Hub, backup_path
 from geiger.server import DashboardServer, pick_step
 from geiger.store import Store
 
@@ -14,12 +15,22 @@ from geiger.store import Store
 class FakeLogger:
     def __init__(self):
         self.sync_requests = 0
+        self.jobs = []
 
     def status(self):
         return {"state": "live"}
 
     def request_sync(self):
         self.sync_requests += 1
+
+    def submit(self, job, argument=None, timeout=30):
+        self.jobs.append((job, argument))
+        if argument and "save_mode" in argument and argument["save_mode"] > 5:
+            raise ValueError("Save to memory: not one of the options")
+        return demo.SETTINGS
+
+    def settings_view(self):
+        return {"connected": True, "read_at": 0, "fields": settings.describe_fields(demo.SETTINGS)}
 
 
 @pytest.fixture
@@ -118,3 +129,45 @@ def test_dashboard_page(server):
     status, headers, body = get(server, "/")
     assert status == 200 and headers["Content-Type"].startswith("text/html")
     assert b"/static/app.js" in body
+
+
+def post_json(srv, path, body):
+    request = urllib.request.Request(
+        srv.base + path, method="POST", data=json.dumps(body).encode(),
+        headers={"X-Geiger": "1", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        return e.code, json.load(e)
+
+
+def test_settings_read_and_write(server):
+    _, _, body = get(server, "/api/settings")
+    keys = {f["key"] for f in json.loads(body)["fields"]}
+    assert {"speaker", "save_mode", "cal_usv_0"} <= keys
+    status, data = post_json(server, "/api/settings", {"changes": {"speaker": 1}})
+    assert status == 200 and data["ok"]
+    assert server.logger.jobs[-1] == ("write", {"speaker": 1})
+    status, data = post_json(server, "/api/settings", {"changes": {"save_mode": 9}})
+    assert status == 400 and "not one of" in data["error"]
+    assert post_json(server, "/api/settings", {"changes": {}})[0] == 400
+    assert post_json(server, "/api/settings/refresh", {})[0] == 200
+    assert server.logger.jobs[-1] == ("read", None)
+
+
+def test_settings_writes_need_the_custom_header(server):
+    assert status_of(server, "/api/settings", method="POST") == 403
+
+
+def test_counter_memory_downloads(server):
+    assert status_of(server, "/api/counter-memory.bin") == 404  # nothing synced yet
+    stamp = bytes([26, 10, 23, 7, 0, 0])
+    image = b"\x55\xaa\x00" + stamp + b"\x55\xaa\x01" + bytes([1, 0, 2])
+    backup_path(server.store).write_bytes(image)
+    _, headers, body = get(server, "/api/counter-memory.bin")
+    assert body == image and "attachment" in headers["Content-Disposition"]
+    _, _, body = get(server, "/api/counter-memory.csv")
+    lines = body.decode().splitlines()
+    assert lines[0].startswith("start_utc,") and len(lines) == 4

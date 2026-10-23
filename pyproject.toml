@@ -3,6 +3,7 @@ name = "geiger"
 version = "0.1.0"
 description = "Logger and live dashboard for GQ GMC-320-series Geiger counters"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 # Pinned to the 0.14 line: the logger relies on pygmc's history page reader and
 # heartbeat wire format, which are internal details that could move in 0.15.

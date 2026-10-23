@@ -4,6 +4,13 @@ Quirks found on a GMC-320S (firmware "Re 1.17") that shape this module:
 
 * A command sent within a few milliseconds of GETCPM or HEARTBEAT0 is silently
   dropped, so every request waits COMMAND_GAP after the previous one.
+* Settings are rewritten as GQ's protocol describes: erase the block (ECFG), write
+  each byte (WCFG with a one-byte address), then apply (CFGUPDATE). About a second
+  later the counter rewrites a few bytes of its own (see ``settings.DEVICE_MANAGED``).
+  Rewriting settings doesn't touch the history memory or interrupt logging.
+* It sometimes ignores HEARTBEAT0 and keeps streaming, so stopping the heartbeat
+  waits for a second of silence and resends until it gets one. (Seen as a 0x80
+  heartbeat byte arriving in place of a settings-write reply.)
 * Heartbeat words carry status flags in their top two bits (seen as 0x80 and 0xC0,
   changing mid-stream); pygmc keeps the low 14 bits, and so does this module.
 * A history page read (SPIR) returns one byte more than asked for. pygmc clears the
@@ -33,17 +40,32 @@ import serial
 from pygmc.connection.utils import get_gmc_usb_devices
 from pygmc.devices.device_rfc1201 import DeviceRFC1201
 
-from .history import device_epoch
+from . import settings
+from .history import PAGE, device_epoch, split_segments
 
 log = logging.getLogger(__name__)
 
 COMMAND_GAP = 0.3  # seconds between commands
 STRAY_BYTE_WAIT = 0.05  # seconds to wait for the extra byte after a history page
+SETTINGS_SETTLE = 1.5  # seconds the counter takes to stamp its own bytes after a settings update
+HEARTBEAT_QUIET = 1.2  # seconds of silence (over one heartbeat period) that prove it stopped
+HEARTBEAT_STOP_TRIES = 4
 HEARTBEAT_OFF = b"<HEARTBEAT0>>"
 
 
 class DeviceError(Exception):
     """The counter did not answer as expected."""
+
+
+@dataclass(frozen=True)
+class Flash:
+    """What a history read found in the counter's memory."""
+
+    image: bytes  # the pages as read, in memory order
+    segments: list[bytes]  # runs of data between blank pages, each parsed on its own
+    wrapped: bool  # the ring buffer is full and overwriting its oldest records
+    used: int  # bytes holding data (the whole memory once wrapped)
+    capacity: int
 
 
 @dataclass(frozen=True)
@@ -101,11 +123,14 @@ class Counter:
         if wait > 0:
             time.sleep(wait)
 
-    def _call(self, fn, *args):
+    def _ready(self) -> None:
         if self._heartbeat_on:
             raise DeviceError("stop the heartbeat before sending commands")
         self._pace()
         self._conn.reset_buffers()
+
+    def _call(self, fn, *args):
+        self._ready()
         try:
             return fn(*args)
         except (struct.error, ValueError, IndexError) as e:
@@ -116,8 +141,49 @@ class Counter:
 
     # commands
 
-    def config(self) -> dict:
-        return dict(self._call(self._dev.get_config))
+    # settings
+
+    def settings_raw(self) -> bytes:
+        """The 256-byte settings block, as stored."""
+        self._ready()
+        raw = self._conn.get_exact(b"<GETCFG>>", size=settings.SIZE)
+        self._last_command = time.monotonic()
+        if len(raw) != settings.SIZE:
+            raise DeviceError("settings came back short")
+        return raw
+
+    def write_settings(self, new: bytes) -> None:
+        """Replace the settings block, then read it back to confirm.
+
+        The protocol only allows erasing the whole block and rewriting it byte by
+        byte (unset bytes read 0xFF after the erase, so those are skipped). One
+        retry covers a dropped reply; the caller keeps a backup for anything worse.
+        """
+        if len(new) != settings.SIZE:
+            raise ValueError("settings block must be 256 bytes")
+        for attempt in (1, 2):
+            self._ready()
+            try:
+                self._expect_ack(b"<ECFG>>", "erase settings")
+                for address, value in enumerate(new):
+                    if value != 0xFF:
+                        self._expect_ack(b"<WCFG" + bytes([address, value]) + b">>", f"write byte {address}")
+                self._expect_ack(b"<CFGUPDATE>>", "apply settings")
+            except DeviceError:
+                if attempt == 2:
+                    raise
+                continue
+            finally:
+                self._last_command = time.monotonic()
+            time.sleep(SETTINGS_SETTLE)  # the counter rewrites its own bytes, then is quiet
+            if settings.same(self.settings_raw(), new):
+                return
+        raise DeviceError("the counter didn't keep the new settings")
+
+    def _expect_ack(self, cmd: bytes, what: str) -> None:
+        reply = self._conn.get_exact(cmd, size=1)
+        if reply != b"\xaa":
+            raise DeviceError(f"no confirmation to {what} (got {reply!r})")
 
     def cpm(self) -> int:
         return self._call(self._dev.get_cpm)
@@ -163,11 +229,26 @@ class Counter:
         return struct.unpack(">H", raw)[0] & 0x3FFF
 
     def stop_heartbeat(self) -> None:
-        self._conn.write(HEARTBEAT_OFF)
-        self._heartbeat_on = False
-        time.sleep(COMMAND_GAP)  # let any word already in flight land, then drop it
-        self._conn.reset_buffers()
-        self._last_command = time.monotonic()
+        """Stop the heartbeat, and make sure it really stopped.
+
+        The counter now and then ignores HEARTBEAT0 and keeps streaming, and a
+        stray heartbeat word in the middle of a settings write or history read
+        would be taken for a reply. So after each attempt, wait out one heartbeat
+        period: if nothing arrives, it has stopped.
+        """
+        port = self._conn._con
+        for _ in range(HEARTBEAT_STOP_TRIES):
+            self._conn.write(HEARTBEAT_OFF)
+            time.sleep(COMMAND_GAP)  # let any word already in flight land, then drop it
+            self._conn.reset_buffers()
+            deadline = time.monotonic() + HEARTBEAT_QUIET
+            while not port.in_waiting and time.monotonic() < deadline:
+                time.sleep(0.02)
+            if not port.in_waiting:
+                self._heartbeat_on = False
+                self._last_command = time.monotonic()
+                return
+        raise DeviceError("the counter didn't stop its heartbeat")
 
     # history
 
@@ -175,29 +256,37 @@ class Counter:
     def flash_size(self) -> int:
         return self._dev._flash_memory_size_bytes
 
-    def read_history(self, progress=None) -> bytes:
-        """Read the flash history page by page, stopping at the first blank page.
+    def read_history(self, progress=None) -> Flash:
+        """Read the history memory page by page.
 
-        The loop of pygmc's ``get_raw_history`` with the stray-byte fix above, a
-        progress callback (bytes_read, flash_size), and a check for short pages.
+        The memory is a ring buffer: once full, the counter overwrites its oldest
+        records, erasing a little ahead of where it writes. Until it first wraps,
+        everything after the data is blank, so reading stops at the first blank
+        page. Once it has wrapped, the last page holds data, and every page is
+        read: the newest stretch, the erased gap, then the older stretch.
+        Progress is reported as (bytes_read, flash_size).
         """
         if self._heartbeat_on:
             raise DeviceError("stop the heartbeat before reading history")
-        page = self._dev._flash_memory_page_size_bytes
-        data = bytearray()
-        self._pace()
-        self._conn.reset_buffers()
+        page = PAGE
+        blank = lambda chunk: chunk.count(0xFF) == page
+        self._ready()
+        image = bytearray()
         try:
+            last = self._read_page(self.flash_size - page, page)
+            wrapped = not blank(last)
             for position in range(0, self.flash_size, page):
-                chunk = self._read_page(position, page)
-                if chunk.count(0xFF) == page:
+                chunk = last if position == self.flash_size - page else self._read_page(position, page)
+                if blank(chunk) and not wrapped:
                     break
-                data += chunk
+                image += chunk
                 if progress:
-                    progress(len(data), self.flash_size)
+                    progress(len(image), self.flash_size)
         finally:
             self._last_command = time.monotonic()
-        return bytes(data)
+        image = bytes(image)
+        used = self.flash_size if wrapped else len(image.rstrip(b"\xff"))
+        return Flash(image, split_segments(image, page), wrapped, used, self.flash_size)
 
     def _read_page(self, position: int, size: int) -> bytes:
         cmd = b"<SPIR" + struct.pack(">I", position)[1:] + struct.pack(">H", size) + b">>"

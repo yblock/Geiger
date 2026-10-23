@@ -126,6 +126,37 @@
     <p class="sync-status muted" id="sync-status"></p>
     <dl class="facts" id="facts"></dl>
   </section>
+
+  <section class="memory" aria-labelledby="memory-heading">
+    <h2 id="memory-heading">Counter memory</h2>
+    <div class="meter" id="memory-meter" role="meter" aria-labelledby="memory-summary" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="meter-fill" id="memory-fill"></div></div>
+    <p class="memory-summary" id="memory-summary">Sync the counter to see what its memory holds.</p>
+    <p class="memory-detail muted" id="memory-detail"></p>
+    <div class="memory-actions" id="memory-actions" hidden>
+      <a class="text-link" href="/api/counter-memory.csv" download>Download its records (CSV)</a>
+      <a class="text-link" href="/api/counter-memory.bin" download>Raw memory backup</a>
+    </div>
+    <details class="erase">
+      <summary>Erasing the counter's memory</summary>
+      <p>Over USB the counter's memory can only be read, so erasing it happens on the counter: <b>Main Menu → Save Data → Erase Saved Data</b>, choose <b>Yes</b>, and wait a few seconds.</p>
+      <p id="erase-check" class="muted"></p>
+    </details>
+  </section>
+
+  <section class="settings" aria-labelledby="settings-heading">
+    <div class="device-head">
+      <h2 id="settings-heading">Counter settings</h2>
+      <button type="button" id="settings-refresh" class="button">Read from counter</button>
+    </div>
+    <p class="muted settings-status" id="settings-status"></p>
+    <form id="settings-form" novalidate></form>
+    <div class="settings-actions">
+      <button type="submit" form="settings-form" id="settings-save" class="button primary" disabled>Save to counter</button>
+      <button type="button" id="settings-discard" class="button" disabled>Discard changes</button>
+      <span class="settings-result" id="settings-result" role="status"></span>
+    </div>
+    <p class="muted settings-note">Not here: baud rate, since changing it would cut the USB connection. The clock is kept in step automatically.</p>
+  </section>
 </main>
 <script src="/static/app.js"></script>
 </body>

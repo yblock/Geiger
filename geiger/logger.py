@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import datetime
 import logging
+import queue
 import threading
 import time
 from collections import deque
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout  # not the builtin before 3.11
+from pathlib import Path
 
+from . import settings
 from .calibration import Calibration
 from .device import Counter, DeviceError
 from .history import history_intervals
@@ -24,34 +29,22 @@ MAX_MISSED_READS = 3
 # Counter clock error worth correcting (seconds). Readings of it carry ±0.5 s of noise.
 CLOCK_TOLERANCE = 3.0
 
-CONFIG_KEYS = (
-    "Alarm",
-    "AlarmValue_uSv",
-    "Speaker",
-    "SaveDataType",
-    "CalibrationCPM_0",
-    "Calibration_uSv_0",
-    "CalibrationCPM_1",
-    "Calibration_uSv_1",
-    "CalibrationCPM_2",
-    "Calibration_uSv_2",
-)
-
-
 def describe(counter: Counter, store: Store) -> tuple[Calibration | None, float | None, float]:
-    """Read and remember the counter's identity, calibration, and clock.
+    """Read and remember the counter's identity, settings, calibration, and clock.
 
     Returns (calibration, battery volts or None, seconds the counter's clock is
     behind this computer's local time; negative when it runs ahead).
     """
-    config = counter.config()
-    calibration = Calibration.from_config(config)
-    if not calibration.segments:
+    raw = counter.settings_raw()
+    try:
+        raw = finish_interrupted_write(counter, store, raw)
+    except DeviceError as e:
+        log.error("couldn't put back the counter's settings (%s); trying again next time it connects", e)
+    check_and_remember_settings(store, raw)
+    calibration = store.calibration()
+    if calibration is None:
         log.warning("counter reports no usable calibration; showing CPM only")
-        calibration = None
     store.set_meta("device", counter.info.to_dict())
-    store.set_meta("config", {k: config.get(k) for k in CONFIG_KEYS})
-    store.set_meta("calibration", calibration.to_dict() if calibration else None)
     try:
         voltage = counter.voltage()
     except DeviceError:
@@ -66,6 +59,75 @@ def describe(counter: Counter, store: Store) -> tuple[Calibration | None, float 
         -drift,
     )
     return calibration, voltage, drift
+
+
+def remember_settings(store: Store, raw: bytes) -> None:
+    config = settings.pygmc_config(raw)
+    store.set_meta("settings", {"at": time.time(), "hex": raw.hex()})
+    store.set_meta("config", config)
+    calibration = Calibration.from_config(config)
+    store.set_meta("calibration", calibration.to_dict() if calibration.segments else None)
+
+
+def check_and_remember_settings(store: Store, raw: bytes) -> None:
+    """Cache a block for the dashboard, unless it looks erased (keep the last good one)."""
+    if settings.incomplete(raw):
+        log.error("the counter's settings look erased; set them on the counter or factory-reset it")
+        store.set_meta("settings_problem", "The counter's settings look erased. Set them on the "
+                       "counter, or use Factory Reset in its menu. Showing the last good copy.")
+        return
+    store.set_meta("settings_problem", None)
+    remember_settings(store, raw)
+
+
+def change_settings(counter: Counter, store: Store, changes: dict) -> bytes:
+    """Apply {key: value} changes to the counter; returns the settings it now holds.
+
+    Before anything is erased, the old and new blocks are recorded, and the record
+    is only marked done once the counter confirms the new one. A write that never
+    finished (unplugged mid-save, say) is therefore always found and settled by
+    ``finish_interrupted_write``, the next time the counter connects at the latest.
+    """
+    record = store.get_meta("settings_write")
+    if record and not record["done"]:
+        raise DeviceError("the last settings change hasn't been settled yet; reconnect the counter first")
+    current = counter.settings_raw()
+    if settings.incomplete(current):
+        raise DeviceError("the counter's settings look erased, so there's nothing safe to change; "
+                          "set them on the counter or factory-reset it first")
+    new = settings.encode(current, changes)  # ValueError for anything out of range
+    if settings.same(new, current):
+        return current
+    record = {"at": time.time(), "old": current.hex(), "new": new.hex(), "done": False}
+    store.set_meta("settings_write", record)
+    counter.write_settings(new)
+    store.set_meta("settings_write", {**record, "done": True})
+    log.info("changed the counter's settings: %s", ", ".join(f"{k}={v}" for k, v in changes.items()))
+    return counter.settings_raw()
+
+
+def finish_interrupted_write(counter: Counter, store: Store, raw: bytes) -> bytes:
+    """Settle a settings write that was never confirmed; returns the block now on the counter.
+
+    If the new block landed after all, keep it. Otherwise put the old block back.
+    """
+    record = store.get_meta("settings_write")
+    if not record or record["done"]:
+        return raw
+    new, old = bytes.fromhex(record["new"]), bytes.fromhex(record["old"])
+    if settings.same(raw, new):
+        # every byte landed, but the final apply step may not have; doing it again is harmless
+        log.info("the last settings change reached the counter; applying it once more")
+        counter.write_settings(new)
+        raw = counter.settings_raw()
+    elif settings.same(raw, old):
+        log.info("the last settings change never reached the counter; nothing to undo")
+    else:
+        log.warning("the last settings change didn't finish; putting back the previous settings")
+        counter.write_settings(old)
+        raw = counter.settings_raw()
+    store.set_meta("settings_write", {**record, "done": True})
+    return raw
 
 
 def local_utc_offset() -> float:
@@ -100,20 +162,25 @@ def sync_history(counter: Counter, store: Store, progress=None) -> dict:
     started = time.time()
     try:
         offsets = store.note_clock(*counter.clock_offset())
-        raw = counter.read_history(progress)
+        flash = counter.read_history(progress)
         finished = time.time()
         # leave the last couple of seconds to the live stream that resumes next
-        rows, dropped = history_intervals(raw, offsets, until=finished - 2)
+        rows, dropped = history_intervals(flash.segments, offsets, until=finished - 2)
         imported, skipped = store.import_intervals(rows)
+        if flash.image:
+            backup_path(store).write_bytes(flash.image)
         result = {
             "at": finished,
             "duration": round(finished - started, 1),
-            "bytes": len(raw),
+            "bytes": len(flash.image),
+            "used": flash.used,
+            "capacity": flash.capacity,
+            "wrapped": flash.wrapped,
             "records": len(rows) + dropped,
             "imported": imported,
             "skipped": skipped + dropped,
-            "first": rows[0][0] if rows else None,
-            "last": rows[-1][0] + rows[-1][1] if rows else None,
+            "first": min(r[0] for r in rows) if rows else None,
+            "last": max(r[0] + r[1] for r in rows) if rows else None,
             "error": None,
         }
         log.info(
@@ -127,6 +194,11 @@ def sync_history(counter: Counter, store: Store, progress=None) -> dict:
         result = {"at": time.time(), "error": str(e)}
     store.set_meta("last_sync", result)
     return result
+
+
+def backup_path(store: Store) -> Path:
+    """Where the latest copy of the counter's memory is kept, next to the database."""
+    return store.path.with_name("counter-memory.bin")
 
 
 class Hub:
@@ -187,6 +259,8 @@ class Logger(threading.Thread):
         self._utc_offset = local_utc_offset()
         self._utc_offset_checked = time.time()
         self._clock_fix_requested = False
+        # settings jobs from HTTP threads: (job, argument, future), run between readings
+        self._jobs: queue.Queue[tuple[str, object, Future]] = queue.Queue()
 
         self._last_ts: int | None = None
         self._window: deque[list[int]] = deque()  # [ts, count] for the last 60 s
@@ -198,6 +272,38 @@ class Logger(threading.Thread):
 
     def stop(self) -> None:
         self._stop_event.set()
+
+    def submit(self, job: str, argument=None, timeout: float = 30) -> bytes:
+        """Run a settings job ("read" or "write" with {key: value}) on the counter.
+
+        Blocks until the logger has run it between two readings; returns the
+        settings block the counter holds afterward.
+        """
+        with self._lock:
+            state = self._state
+        if state == "syncing":
+            raise DeviceError("the counter is busy copying its history; try again when that finishes")
+        if state != "live":
+            raise DeviceError("the counter isn't connected")
+        future: Future = Future()
+        self._jobs.put((job, argument, future))
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeout:
+            future.cancel()  # still queued: it will be skipped, not run behind the caller's back
+            raise TimeoutError("the counter didn't finish in time") from None
+
+    def settings_view(self) -> dict:
+        """The counter's settings as last read, for the dashboard."""
+        cached = self.store.get_meta("settings")
+        with self._lock:
+            connected = self._state == "live"
+        return {
+            "connected": connected,
+            "read_at": cached["at"] if cached else None,
+            "problem": self.store.get_meta("settings_problem"),
+            "fields": settings.describe_fields(bytes.fromhex(cached["hex"])) if cached else [],
+        }
 
     def status(self) -> dict:
         with self._lock:
@@ -252,6 +358,7 @@ class Logger(threading.Thread):
             finally:
                 if counter:
                     counter.close()
+                self._fail_jobs("the counter disconnected before the change was made")
             self._stop_event.wait(retry)
             retry = min(retry * 2, 30.0)
         self._set_state("stopped")
@@ -296,18 +403,58 @@ class Logger(threading.Thread):
                     self._fix_clock(counter)
             if self._sync_requested.is_set():
                 self._sync(counter)
+            self._run_jobs(counter)
             self._resume_window()
             counter.start_heartbeat()
             self._set_state("live")
             self._read_heartbeat(counter)
             counter.stop_heartbeat()
 
+    def _run_jobs(self, counter: Counter) -> None:
+        while True:
+            try:
+                job, argument, future = self._jobs.get_nowait()
+            except queue.Empty:
+                return
+            if not future.set_running_or_notify_cancel():
+                continue  # the caller stopped waiting
+            try:
+                if job == "write":
+                    raw = change_settings(counter, self.store, argument)
+                else:
+                    raw = counter.settings_raw()
+                check_and_remember_settings(self.store, raw)
+                future.set_result(raw)
+            except (ValueError, TypeError, OverflowError) as e:
+                future.set_exception(ValueError(str(e)))
+            except DeviceError as e:
+                future.set_exception(e)
+                # settle a write that failed partway now, rather than at the next connect;
+                # if the counter won't answer even that, reconnecting tries again
+                raw = finish_interrupted_write(counter, self.store, counter.settings_raw())
+                check_and_remember_settings(self.store, raw)
+            except Exception as e:  # the port went away mid-job: report it, then reconnect
+                future.set_exception(DeviceError(f"the counter stopped answering ({e})"))
+                raise
+            finally:
+                with self._lock:
+                    self.calibration = self.store.calibration()
+            self._publish_status()
+
+    def _fail_jobs(self, reason: str) -> None:
+        while True:
+            try:
+                _, _, future = self._jobs.get_nowait()
+            except queue.Empty:
+                return
+            future.set_exception(DeviceError(reason))
+
     def _read_heartbeat(self, counter: Counter) -> None:
-        """Record readings until stopped or a sync is wanted."""
+        """Record readings until stopped, or until a sync or settings job is waiting."""
         missed = 0
         while not self._stop_event.is_set():
             self._check_timers()
-            if self._sync_requested.is_set() or self._clock_fix_requested:
+            if self._sync_requested.is_set() or self._clock_fix_requested or not self._jobs.empty():
                 return
             cps = counter.read_cps()
             if cps is None:

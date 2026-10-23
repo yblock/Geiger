@@ -1,8 +1,10 @@
 import time
 
+import pytest
 import serial
 
-from geiger.device import DeviceInfo
+from geiger import demo
+from geiger.device import DeviceInfo, Flash
 from geiger.logger import Hub, Logger, local_utc_offset
 from geiger.store import Store
 
@@ -66,10 +68,8 @@ class UnpluggedMidStream:
         self.readings = 0
         self.closed = False
 
-    def config(self):
-        return {f"CalibrationCPM_{i}": c for i, c in enumerate((1538, 15380, 30760))} | {
-            f"Calibration_uSv_{i}": u for i, u in enumerate((10.0, 100.0, 200.0))
-        }
+    def settings_raw(self):
+        return demo.SETTINGS
 
     def voltage(self):
         return 4.1
@@ -79,7 +79,7 @@ class UnpluggedMidStream:
         return time.time() + local_utc_offset(), -local_utc_offset()
 
     def read_history(self, progress=None):
-        return b""
+        return Flash(b"", [], False, 0, self.flash_size)
 
     def start_heartbeat(self):
         pass
@@ -120,6 +120,116 @@ def test_pulling_the_cable_is_an_ordinary_disconnect(tmp_path, caplog):
     assert made[0].closed
     assert len(logger.store.recent(0)) == 2  # readings before the unplug were kept
     assert not [r for r in caplog.records if r.levelname == "ERROR"]  # no traceback logged
+
+
+class CutShort(demo.DemoCounter):
+    """Erases its settings, writes the first `survive` bytes, then the cable comes out."""
+
+    def __init__(self, survive):
+        super().__init__()
+        self.survive = survive
+        self.cut = False
+
+    def write_settings(self, new):
+        if not self.cut:
+            self.cut = True
+            self._settings = bytes(new[: self.survive]) + b"\xff" * (256 - self.survive)
+            raise OSError("device disconnected")
+        super().write_settings(new)
+
+
+@pytest.mark.parametrize("survive", [0, 40, 66])  # 66: past every byte incomplete() checks
+def test_an_interrupted_settings_write_is_undone_on_the_next_connect(tmp_path, survive):
+    from geiger.logger import change_settings, describe
+
+    store = Store(tmp_path / "test.db")
+    counter = CutShort(survive)
+    with pytest.raises(OSError):
+        change_settings(counter, store, {"save_mode": 1, "led": 0})
+    assert store.get_meta("settings_write")["done"] is False
+    describe(counter, store)  # what the logger does when the counter reconnects
+    assert counter.settings_raw() == demo.SETTINGS
+    assert store.get_meta("settings_write")["done"] is True
+    assert store.get_meta("config")["SaveDataType"] == 2
+
+
+def test_a_write_that_landed_before_the_cut_is_kept(tmp_path):
+    from geiger.logger import change_settings, describe
+
+    store = Store(tmp_path / "test.db")
+    counter = CutShort(256)  # every byte made it; only the confirmation was lost
+    with pytest.raises(OSError):
+        change_settings(counter, store, {"save_mode": 1})
+    writes = []
+    counter.write_settings = lambda new: (writes.append(new), demo.DemoCounter.write_settings(counter, new))
+    describe(counter, store)
+    assert counter.settings_raw()[32] == 1
+    assert writes and writes[0][32] == 1  # written once more, so the counter applies it
+
+
+def test_a_write_that_never_reached_the_counter_is_just_closed(tmp_path):
+    from geiger.logger import change_settings, describe
+
+    store = Store(tmp_path / "test.db")
+    counter = CutShort(0)
+    counter.write_settings = lambda new: (_ for _ in ()).throw(OSError("unplugged before the erase"))
+    with pytest.raises(OSError):
+        change_settings(counter, store, {"led": 0})
+    writes = []
+    counter.write_settings = writes.append
+    describe(counter, store)
+    assert writes == []  # nothing rewritten: the counter still had its old settings
+    assert store.get_meta("settings_write")["done"] is True
+
+
+def test_a_valid_calibration_with_a_0xff_byte_isnt_mistaken_for_erased(tmp_path):
+    from geiger.logger import change_settings, describe
+
+    store = Store(tmp_path / "test.db")
+    counter = demo.DemoCounter()
+    change_settings(counter, store, {"cal_cpm_0": 1023})  # stored as 03 FF
+    describe(counter, store)
+    assert store.get_meta("config")["CalibrationCPM_0"] == 1023
+    assert store.get_meta("settings_problem") is None
+
+
+def test_an_erased_block_is_not_cached_or_changed(tmp_path):
+    from geiger.device import DeviceError
+    from geiger.logger import change_settings, describe
+
+    store = Store(tmp_path / "test.db")
+    counter = demo.DemoCounter()
+    describe(counter, store)
+    counter._settings = b"\xff" * 256  # erased by something else, with no write on record
+    describe(counter, store)
+    assert store.get_meta("config")["SaveDataType"] == 2  # the last good copy stays
+    assert "erased" in store.get_meta("settings_problem")
+    with pytest.raises(DeviceError, match="erased"):
+        change_settings(counter, store, {"led": 1})
+
+
+def test_settings_jobs_run_between_readings(tmp_path):
+    logger = make_logger(tmp_path)
+    logger.connect = demo.DemoCounter
+    logger.backfill = logger.set_clock = False
+    logger.start()
+    try:
+        deadline = time.time() + 10
+        while logger.status()["state"] != "live" and time.time() < deadline:
+            time.sleep(0.05)
+        raw = logger.submit("write", {"speaker": 1, "alarm_usv": 0.8})
+        assert raw[2] == 1
+        view = logger.settings_view()
+        assert {f["key"]: f["value"] for f in view["fields"]}["alarm_usv"] == pytest.approx(0.8)
+        with pytest.raises(ValueError):
+            logger.submit("write", {"save_mode": 42})
+        for junk in (None, [1], {"a": 1}, float("inf")):  # what malformed JSON can produce
+            with pytest.raises(ValueError):
+                logger.submit("write", {"alarm_cpm": junk})
+        assert logger.status()["state"] == "live"  # bad input never costs the connection
+    finally:
+        logger.stop()
+        logger.join(timeout=5)
 
 
 def test_backfill_waits_out_the_cooldown(tmp_path, monkeypatch):

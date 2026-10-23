@@ -122,7 +122,8 @@ function fmtDuration(seconds) {
   if (seconds < 90) return `${Math.round(seconds)} s`;
   if (seconds < 5400) return `${Math.round(seconds / 60)} min`;
   if (seconds < 172800) return `${(seconds / 3600).toFixed(1).replace(/\.0$/, "")} h`;
-  return `${(seconds / 86400).toFixed(1).replace(/\.0$/, "")} days`;
+  if (seconds < 400 * 86400) return `${Math.round(seconds / 86400)} days`;
+  return `${(seconds / 31557600).toFixed(1).replace(/\.0$/, "")} years`;
 }
 
 function fmtWhen(ts) {
@@ -152,6 +153,7 @@ function onStatus(status) {
   }
   renderStatus();
   renderReading();
+  if (status.state === "live" && previous !== "live" && previous !== "syncing") loadSettings(); // just connected
   if (previous === undefined && app.range === "all") loadSeries(); // now the first reading's date is known
   if (previous === "syncing" && status.state !== "syncing") {
     loadSeries();
@@ -201,6 +203,8 @@ function renderStatus() {
   $("sync-status").textContent = syncText;
 
   renderFacts();
+  renderMemory();
+  updateSettingsUi();
 }
 
 function renderFacts() {
@@ -240,11 +244,18 @@ function renderFacts() {
     const [cpm, usv] = calibration.points[0];
     add("Calibration", `${cpm.toLocaleString()} CPM = ${usv} µSv/h`, `${calibration.usv_per_cpm.toPrecision(3)} µSv/h per CPM, from the counter's settings`);
   }
-  if (config) {
-    add("Counter's own log", SAVE_MODES[config.SaveDataType] ?? `Mode ${config.SaveDataType}`, "What it records to memory between syncs");
-    add("Alarm", config.Alarm ? `On at ${fmtLevel(config.AlarmValue_uSv)} µSv/h` : "Off");
-  }
+  if (config) add("Alarm", config.Alarm ? `On at ${alarmLevel().label}` : "Off");
   if (s.bounds) add("Stored here", `Since ${dayYearFmt.format(toDate(s.bounds[0]))}`);
+}
+
+// the counter's alarm as set: in CPM or µSv/h, whichever it triggers on
+function alarmLevel() {
+  const c = app.status?.config;
+  if (!c?.Alarm) return null;
+  if (c.AlarmType === 0) {
+    return { cpm: c.AlarmCPM, usv: app.toUsv?.(c.AlarmCPM) ?? null, label: `${fmtLevel(c.AlarmCPM)} CPM` };
+  }
+  return { usv: c.AlarmValue_uSv, cpm: app.toCpm?.(c.AlarmValue_uSv) ?? null, label: `${fmtLevel(c.AlarmValue_uSv)} µSv/h` };
 }
 
 // live reading
@@ -280,14 +291,15 @@ function renderReading() {
       ? full ? "over the last minute" : `estimated from ${r.window} s`
       : `last reading ${fmtWhen(r.ts)}`;
 
-    const alarm = app.status?.config?.Alarm ? app.status.config.AlarmValue_uSv : null;
+    const alarm = alarmLevel();
     const verdict = $("verdict");
-    verdict.hidden = alarm == null || usv == null;
+    // compare in the unit the counter's alarm uses, as the counter does
+    const over = alarm && (app.status.config.AlarmType === 0 ? r.cpm >= alarm.cpm : usv != null && usv >= alarm.usv);
+    verdict.hidden = !alarm || (app.status.config.AlarmType !== 0 && usv == null);
     if (!verdict.hidden) {
-      const over = usv >= alarm;
       verdict.classList.toggle("alarm", over);
       verdict.innerHTML = over ? WARN : CHECK;
-      verdict.append(` ${over ? "At or above" : "Below"} the counter's alarm level of ${fmtLevel(alarm)} µSv/h`);
+      verdict.append(` ${over ? "At or above" : "Below"} the counter's alarm level of ${alarm.label}`);
     }
   }
   renderLevels(r && (r.usv_h ?? app.toUsv?.(r.cpm)), live);
@@ -485,8 +497,8 @@ function renderChart() {
   const x = (t) => m.l + ((t - data.start) / span) * (w - m.l - m.r);
   chart.x = x;
 
-  const alarmUsv = app.status?.config?.Alarm ? app.status.config.AlarmValue_uSv : null;
-  const alarm = alarmUsv == null ? null : app.unit === "usv" ? alarmUsv : app.toCpm?.(alarmUsv) ?? null;
+  const level = alarmLevel();
+  const alarm = level ? (app.unit === "usv" && app.toUsv ? level.usv : level.cpm) ?? null : null;
   let top = 0;
   for (const p of pts) top = Math.max(top, unitValue(p.hi ?? p.cpm), unitValue(p.cpm));
   const showAlarm = alarm != null && top > 0 && alarm <= top * 1.6;
@@ -580,9 +592,9 @@ function setCaption(showAlarm, alarm) {
   if (zoomed && chart.pts.length) {
     text += ` Zoomed to the readings in this range, ${fmtWhen(data.start)} to ${fmtWhen(data.end)}.`;
   }
-  const alarmUsv = app.status?.config?.Alarm ? app.status.config.AlarmValue_uSv : null;
-  if (alarmUsv != null && !showAlarm && chart.pts.length) {
-    text += ` The counter's alarm level (${fmtLevel(alarmUsv)} µSv/h) is far above this range.`;
+  const level = alarmLevel();
+  if (level && !showAlarm && chart.pts.length) {
+    text += ` The counter's alarm level (${level.label}) is far above this range.`;
   }
   $("chart-caption").textContent = text;
 }
@@ -724,6 +736,284 @@ function renderTable() {
   }));
 }
 
+// counter memory
+
+const SECONDS_PER_RECORD = { 1: 1, 2: 60, 3: 3600 };
+
+function fmtBytes(n) {
+  if (n < 1024) return `${n} bytes`;
+  if (n < 1048576) return `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB`;
+  return `${(n / 1048576).toFixed(1).replace(/\.0$/, "")} MB`;
+}
+
+function renderMemory() {
+  const s = app.status;
+  const sync = s?.last_sync;
+  const meter = $("memory-meter");
+  const actions = $("memory-actions");
+  if (!sync || sync.used == null) {
+    $("memory-summary").textContent = sync?.error
+      ? `Its memory couldn't be read: ${sync.error}`
+      : "Sync the counter to see what its memory holds.";
+    $("memory-detail").textContent = "";
+    $("erase-check").textContent = "";
+    actions.hidden = true;
+    return;
+  }
+  const pct = (100 * sync.used) / sync.capacity;
+  $("memory-fill").style.width = `${Math.min(100, pct)}%`;
+  meter.setAttribute("aria-valuenow", pct.toFixed(1));
+  meter.classList.toggle("full", sync.wrapped);
+  $("memory-summary").textContent = sync.wrapped
+    ? `Full: ${fmtBytes(sync.capacity)}, and the counter is overwriting its oldest records`
+    : `${fmtBytes(sync.used)} of ${fmtBytes(sync.capacity)} used (${pct < 1 ? "under 1" : Math.round(pct)}%)`;
+
+  const parts = [];
+  if (sync.records) {
+    const span = sync.first && sync.last ? `, ${dayFmt.format(toDate(sync.first))} to ${dayFmt.format(toDate(sync.last))}` : "";
+    parts.push(`${sync.records.toLocaleString()} records${span}.`);
+  }
+  const mode = s.config?.SaveDataType;
+  const perRecord = SECONDS_PER_RECORD[mode];
+  if (mode === 0) parts.push("Saving is off, so it records nothing while it's away from the Mac.");
+  else if (mode === 4 || mode === 5) parts.push("It only saves readings above its threshold, so how long the memory lasts depends on how often that happens.");
+  else if (perRecord && sync.records && sync.used) {
+    const bytesPerRecord = sync.used / sync.records;
+    const setting = SAVE_MODES[mode].toLowerCase();
+    if (sync.wrapped) {
+      const holds = (sync.capacity / bytesPerRecord) * perRecord;
+      parts.push(`Saving ${setting}, it holds about ${fmtDuration(holds)}; sync at least that often so nothing is lost.`);
+    } else {
+      const left = ((sync.capacity - sync.used) / bytesPerRecord) * perRecord;
+      parts.push(`Saving ${setting}, it has room for about ${fmtDuration(left)} more before it starts overwriting its oldest records.`);
+    }
+  }
+  parts.push(`As of the last sync, ${fmtWhen(sync.at)}.`);
+  $("memory-detail").textContent = parts.join(" ");
+  actions.hidden = !sync.bytes;
+
+  const live = app.connected && s.state === "live";
+  $("erase-check").textContent = live
+    ? `Everything it held at ${fmtWhen(sync.at)} is stored here, and readings since then are being recorded live, so erasing loses nothing.`
+    : `Everything it held at ${fmtWhen(sync.at)} is stored here. If it has recorded more since, connect and sync it before erasing.`;
+}
+
+// counter settings
+
+const settingsState = { data: null, draft: {}, invalid: new Set(), busy: false };
+
+async function loadSettings() {
+  try {
+    settingsState.data = await (await fetch("/api/settings")).json();
+  } catch {
+    return;
+  }
+  settingsState.draft = {};
+  settingsState.invalid.clear();
+  renderSettings();
+}
+
+function settingField(key) {
+  return settingsState.data?.fields.find((f) => f.key === key);
+}
+
+function settingValue(key) {
+  return key in settingsState.draft ? settingsState.draft[key] : settingField(key)?.value;
+}
+
+function settingVisible(key) {
+  const threshold = [4, 5].includes(settingValue("save_mode"));
+  switch (key) {
+    case "alarm_cpm": return settingValue("alarm_type") === 0;
+    case "alarm_usv": return settingValue("alarm_type") !== 0;
+    case "threshold_type": return threshold;
+    case "threshold_cpm": return threshold && settingValue("threshold_type") === 0;
+    case "threshold_usv": return threshold && settingValue("threshold_type") === 1;
+    default: return true;
+  }
+}
+
+function setDraft(f, value) {
+  const original = f.value;
+  const same = f.kind === "f32" ? Math.abs(value - original) < 1e-6 : value === original;
+  if (same) delete settingsState.draft[f.key];
+  else settingsState.draft[f.key] = value;
+  updateSettingsUi();
+}
+
+function settingRow(f) {
+  const row = document.createElement("div");
+  row.className = "setting";
+  row.dataset.key = f.key;
+  const id = `setting-${f.key}`;
+  const label = document.createElement("label");
+  label.htmlFor = id;
+  label.textContent = f.label;
+  let control;
+  if (f.kind === "bool") {
+    control = document.createElement("input");
+    control.type = "checkbox";
+    control.className = "switch";
+    control.setAttribute("role", "switch");
+    control.id = id;
+    control.checked = f.value === 1;
+    control.indeterminate = !f.known; // a value this layout doesn't recognize: left alone unless changed
+    control.addEventListener("change", () => setDraft(f, control.checked ? 1 : 0));
+  } else if (f.kind === "choice") {
+    control = document.createElement("select");
+    control.id = id;
+    for (const [value, text] of Object.entries(f.options)) control.add(new Option(text, value));
+    if (!f.known) control.add(new Option(`Unknown (${f.value})`, String(f.value)));
+    control.value = String(f.value);
+    control.addEventListener("change", () => setDraft(f, Number(control.value)));
+  } else {
+    control = document.createElement("span");
+    control.className = "number";
+    const input = document.createElement("input");
+    input.type = "number";
+    input.id = id;
+    input.min = f.min;
+    input.max = f.max;
+    const whole = f.kind !== "f32";
+    input.step = whole ? "1" : f.key.startsWith("cal_") ? "0.001" : "0.01";
+    input.value = f.value == null ? "" : f.kind === "f32" ? String(Number(f.value.toFixed(4))) : String(f.value);
+    input.addEventListener("input", () => {
+      const n = input.valueAsNumber;
+      const ok = !Number.isNaN(n) && n >= f.min && n <= f.max && (!whole || Number.isInteger(n));
+      input.setCustomValidity(ok ? "" : `Enter ${whole ? "a whole number" : "a number"} from ${f.min} to ${f.max}`);
+      if (ok) {
+        settingsState.invalid.delete(f.key);
+        setDraft(f, n);
+      } else {
+        settingsState.invalid.add(f.key);
+        updateSettingsUi();
+      }
+    });
+    const unit = document.createElement("span");
+    unit.textContent = f.unit;
+    control.append(input, unit);
+  }
+  row.append(label, control);
+  if (f.help) {
+    const help = document.createElement("p");
+    help.className = "help";
+    help.textContent = f.help;
+    row.append(help);
+  }
+  return row;
+}
+
+function renderSettings() {
+  const form = $("settings-form");
+  form.replaceChildren();
+  const fields = settingsState.data?.fields ?? [];
+  const groups = new Map();
+  for (const f of fields) {
+    if (!groups.has(f.group)) groups.set(f.group, []);
+    groups.get(f.group).push(f);
+  }
+  for (const [name, members] of groups) {
+    const set = document.createElement("fieldset");
+    const legend = document.createElement("legend");
+    legend.textContent = name;
+    set.append(legend);
+    let box = set;
+    if (name === "Calibration") {
+      set.classList.add("calibration");
+      const help = document.createElement("p");
+      help.className = "help muted";
+      help.textContent = "Each point pairs a CPM reading with the dose rate it stands for; µSv/h readings everywhere follow these. Change them only against a known reference source.";
+      box = document.createElement("div");
+      box.className = "calibration-grid";
+      set.append(help, box);
+    }
+    for (const f of members) box.append(settingRow(f));
+    form.append(set);
+  }
+  updateSettingsUi();
+}
+
+function updateSettingsUi() {
+  const data = settingsState.data;
+  const live = app.connected && app.status?.state === "live";
+  for (const row of $("settings-form").querySelectorAll(".setting")) {
+    const key = row.dataset.key;
+    row.hidden = !settingVisible(key);
+    if (row.hidden && (key in settingsState.draft || settingsState.invalid.has(key))) {
+      // an edit to a field that no longer applies (say, the CPM level after switching
+      // the alarm to µSv/h) is dropped, not saved out of sight
+      delete settingsState.draft[key];
+      settingsState.invalid.delete(key);
+      const fresh = settingRow(settingField(key));
+      fresh.hidden = true;
+      row.replaceWith(fresh);
+      continue;
+    }
+    row.classList.toggle("changed", key in settingsState.draft);
+  }
+  const changes = Object.keys(settingsState.draft).length;
+  for (const set of $("settings-form").querySelectorAll("fieldset")) set.disabled = !live || settingsState.busy;
+  const save = $("settings-save");
+  save.disabled = !live || settingsState.busy || !changes || settingsState.invalid.size > 0;
+  save.textContent = changes ? `Save ${changes} ${changes === 1 ? "change" : "changes"} to counter` : "Save to counter";
+  $("settings-discard").disabled = settingsState.busy || !changes;
+  $("settings-refresh").disabled = !live || settingsState.busy;
+  const status = $("settings-status");
+  if (data?.problem) status.textContent = data.problem;
+  else if (!data?.fields.length) status.textContent = "Connect the counter to read its settings.";
+  else if (live) status.textContent = `Read from the counter ${fmtWhen(data.read_at)}. Nothing changes on it until you save.`;
+  else status.textContent = `What the counter was set to ${fmtWhen(data.read_at)}. Connect it to make changes.`;
+}
+
+async function settingsRequest(path, body, working, done) {
+  const result = $("settings-result");
+  settingsState.busy = true;
+  updateSettingsUi();
+  result.className = "settings-result";
+  result.textContent = working;
+  try {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "X-Geiger": "1", "Content-Type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+    settingsState.data = data;
+    settingsState.draft = {};
+    settingsState.invalid.clear();
+    settingsState.busy = false;
+    renderSettings();
+    result.classList.add("ok");
+    result.textContent = done;
+  } catch (e) {
+    // keep the form as the user left it, edits and all, so a retry sends what they see
+    settingsState.busy = false;
+    updateSettingsUi();
+    result.classList.add("error");
+    const message = e.message.charAt(0).toUpperCase() + e.message.slice(1);
+    result.textContent = Object.keys(settingsState.draft).length
+      ? `${message}. Your edits are still here; Read from counter shows what it holds now.`
+      : `${message}.`;
+  }
+}
+
+function setupSettings() {
+  $("settings-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (!Object.keys(settingsState.draft).length) return;
+    settingsRequest("/api/settings", { changes: settingsState.draft }, "Writing to the counter…", "Saved to the counter.");
+  });
+  $("settings-discard").addEventListener("click", () => {
+    settingsState.draft = {};
+    settingsState.invalid.clear();
+    $("settings-result").textContent = "";
+    renderSettings();
+  });
+  $("settings-refresh").addEventListener("click", () =>
+    settingsRequest("/api/settings/refresh", null, "Reading from the counter…", "Read from the counter."));
+}
+
 // controls
 
 function setupControls() {
@@ -820,9 +1110,11 @@ function init() {
   readTapeColor();
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readTapeColor(); drawTape(); });
   setupControls();
+  setupSettings();
   setupChartHover();
   connectEvents();
   loadSeries();
+  loadSettings();
   loadBaseline();
   scheduleRefresh();
   setInterval(loadBaseline, 600000);

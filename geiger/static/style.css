@@ -596,6 +596,196 @@ th {
   font-size: 13px;
 }
 
+/* counter memory */
+
+.memory,
+.settings {
+  margin-top: 36px;
+  padding-top: 32px;
+  border-top: 1px solid var(--rule);
+}
+
+.meter {
+  height: 10px;
+  margin-top: 16px;
+  border-radius: 5px;
+  background: var(--grid);
+  overflow: hidden;
+  max-width: 560px;
+}
+
+.meter-fill {
+  width: 0;
+  min-width: 3px;
+  height: 100%;
+  border-radius: 5px;
+  background: var(--series);
+}
+
+.meter.full .meter-fill { background: var(--warning); }
+
+.memory-summary {
+  margin-top: 10px;
+  font-size: 16px;
+  font-weight: 550;
+}
+
+.memory-detail {
+  margin-top: 4px;
+  max-width: 72ch;
+  font-size: 14px;
+}
+
+.memory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin-top: 14px;
+}
+
+.erase { margin-top: 18px; max-width: 72ch; }
+.erase p { margin-top: 8px; font-size: 14px; color: var(--ink-2); }
+.erase b { font-weight: 600; color: var(--ink); }
+
+/* counter settings */
+
+.settings-status { margin-top: 8px; font-size: 14px; min-height: 1.45em; }
+
+#settings-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 8px 40px;
+  margin-top: 18px;
+}
+
+#settings-form fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+#settings-form legend {
+  padding: 0;
+  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+#settings-form fieldset.calibration { grid-column: 1 / -1; }
+
+.setting {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 2px 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--grid);
+}
+
+.setting label { font-size: 15px; }
+.setting .help { grid-column: 1 / -1; font-size: 13px; color: var(--muted); }
+.setting.changed label { color: var(--series); font-weight: 600; }
+
+.setting select,
+.setting input[type="number"] {
+  font: inherit;
+  font-size: 14px;
+  padding: 5px 8px;
+  border: 1px solid var(--rule);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.setting input[type="number"] { width: 110px; text-align: right; font-variant-numeric: tabular-nums; }
+
+.number { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ink-2); }
+
+.setting input:invalid { border-color: var(--critical); }
+
+/* on/off switch */
+.switch {
+  appearance: none;
+  position: relative;
+  width: 38px;
+  height: 22px;
+  margin: 0;
+  border-radius: 11px;
+  background: var(--axis);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--surface);
+  transition: transform 0.15s;
+}
+
+.switch:checked { background: var(--series); }
+.switch:checked::after { transform: translateX(16px); }
+.switch:indeterminate { background: var(--warning); }
+
+.calibration > .help {
+  max-width: 72ch;
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+
+/* one column per calibration point: its CPM above its µSv/h */
+.calibration-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: auto auto;
+  grid-auto-flow: column;
+  gap: 0 40px;
+}
+
+@media (max-width: 640px) {
+  .calibration-grid { grid-template-columns: 1fr; grid-template-rows: none; grid-auto-flow: row; }
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-top: 22px;
+}
+
+.button.primary {
+  border-color: var(--series);
+  background: var(--series);
+  color: #fff;
+}
+
+.button.primary:disabled {
+  border-color: var(--rule);
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.settings-result { font-size: 14px; color: var(--ink-2); }
+.settings-result.error { color: var(--critical-text); }
+.settings-result.ok { color: var(--good-text); }
+
+.settings-note { margin-top: 18px; max-width: 72ch; font-size: 13px; }
+
+#settings-form:disabled,
+#settings-form[aria-disabled="true"] { opacity: 0.6; }
+
+@media (prefers-reduced-motion: reduce) {
+  .switch, .switch::after { transition: none; }
+}
+
 @media (max-width: 860px) {
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

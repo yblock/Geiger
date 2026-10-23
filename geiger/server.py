@@ -14,7 +14,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .logger import Hub, Logger
+from .device import DeviceError
+from .history import history_intervals, split_segments
+from .logger import Hub, Logger, backup_path
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -31,6 +33,7 @@ STEPS = (1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 2
          43200, 86400, 172800, 604800)
 MAX_POINTS = 2000
 MIN_CHART_SPAN = 120  # seconds; a fitted chart never zooms in further than this
+MAX_BODY = 64 * 1024  # bytes; settings changes are tiny
 
 
 def pick_step(span: int, points: int) -> int:
@@ -66,6 +69,9 @@ class Handler(BaseHTTPRequestHandler):
             "/api/recent": lambda: self._recent(query),
             "/api/events": self._events,
             "/api/export.csv": lambda: self._export(query),
+            "/api/settings": lambda: self._json(self.server.logger.settings_view()),
+            "/api/counter-memory.bin": self._memory_backup,
+            "/api/counter-memory.csv": self._memory_csv,
         }
         try:
             if url.path in routes:
@@ -93,11 +99,50 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("X-Geiger") != "1":
             self.send_error(HTTPStatus.FORBIDDEN)
             return
-        if urlparse(self.path).path == "/api/sync":
-            self.server.logger.request_sync()
-            self._json({"ok": True}, HTTPStatus.ACCEPTED)
+        path = urlparse(self.path).path
+        try:
+            if path == "/api/sync":
+                self.server.logger.request_sync()
+                self._json({"ok": True}, HTTPStatus.ACCEPTED)
+            elif path in ("/api/settings", "/api/settings/refresh"):
+                self._settings_job(path)
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception:
+            log.exception("error serving POST %s", self.path)
+            self._json({"error": "internal error; see the logger's log"},
+                       HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _read_json(self) -> dict:
+        length = int(self.headers.get("Content-Length") or 0)
+        if not 0 <= length <= MAX_BODY:
+            raise ValueError("request body missing or too large")
+        body = json.loads(self.rfile.read(length) or b"{}")
+        if not isinstance(body, dict):
+            raise ValueError("expected a JSON object")
+        return body
+
+    def _settings_job(self, path: str):
+        logger = self.server.logger
+        try:
+            if path == "/api/settings":
+                changes = self._read_json().get("changes")
+                if not isinstance(changes, dict) or not changes:
+                    raise ValueError("send {\"changes\": {setting: value, ...}}")
+                logger.submit("write", changes)
+            else:
+                logger.submit("read")
+        except ValueError as e:  # includes bad JSON
+            self._json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
+        except DeviceError as e:
+            self._json({"error": str(e)}, HTTPStatus.CONFLICT)
+        except TimeoutError:
+            self._json({"error": "the counter didn't finish in time; check it and try again"},
+                       HTTPStatus.GATEWAY_TIMEOUT)
         else:
-            self.send_error(HTTPStatus.NOT_FOUND)
+            self._json({"ok": True, **logger.settings_view()})
 
     # responses
 
@@ -184,6 +229,42 @@ class Handler(BaseHTTPRequestHandler):
             "text/csv; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{name}"'},
         )
+
+    def _memory_backup(self):
+        path = backup_path(self.server.store)
+        if not path.is_file():
+            self._json({"error": "no copy yet; sync the counter first"}, HTTPStatus.NOT_FOUND)
+            return
+        stamp = datetime.date.fromtimestamp(path.stat().st_mtime)
+        self._send(path.read_bytes(), "application/octet-stream",
+                   headers={"Content-Disposition": f'attachment; filename="counter-memory-{stamp}.bin"'})
+
+    def _memory_csv(self):
+        """Every record in the last copy of the counter's memory, as the counter stored it."""
+        store = self.server.store
+        path = backup_path(store)
+        if not path.is_file():
+            self._json({"error": "no copy yet; sync the counter first"}, HTTPStatus.NOT_FOUND)
+            return
+        rows, _ = history_intervals(split_segments(path.read_bytes()), store.clock_offsets())
+        calibration = store.calibration()
+        out = io.StringIO()
+        writer = csv.writer(out)
+        writer.writerow(["start_utc", "start_local", "seconds", "counts", "cpm", "usv_h"])
+        for ts, seconds, count in sorted(rows):
+            moment = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc)
+            cpm = 60 * count / seconds
+            writer.writerow([
+                moment.isoformat(),
+                moment.astimezone().isoformat(),
+                seconds,
+                count,
+                f"{cpm:.2f}",
+                f"{calibration.usv_h(cpm):.4f}" if calibration else "",
+            ])
+        stamp = datetime.date.fromtimestamp(path.stat().st_mtime)
+        self._send(out.getvalue().encode(), "text/csv; charset=utf-8",
+                   headers={"Content-Disposition": f'attachment; filename="counter-memory-{stamp}.csv"'})
 
     def _events(self):
         self.send_response(HTTPStatus.OK)

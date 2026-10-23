@@ -23,8 +23,9 @@ def test_seeded_history_looks_like_a_month_of_background(tmp_path):
 
 def test_seeding_is_repeatable(tmp_path):
     a, b = Store(tmp_path / "a.db"), Store(tmp_path / "b.db")
-    demo.seed(a, days=2)
-    demo.seed(b, days=2)
+    now = int(time.time())
+    demo.seed(a, days=2, now=now)
+    demo.seed(b, days=2, now=now)
     assert a.minutes_between(0, 2**40) == b.minutes_between(0, 2**40)
 
 
