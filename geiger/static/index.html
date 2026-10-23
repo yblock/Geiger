@@ -157,6 +157,33 @@
     </div>
     <p class="muted settings-note">Not here: baud rate, since changing it would cut the USB connection. The clock is kept in step automatically.</p>
   </section>
+
+  <dialog id="calibration-unlock" aria-labelledby="calibration-unlock-title">
+    <form method="dialog">
+      <h2 id="calibration-unlock-title">Change the counter's calibration?</h2>
+      <p>Calibration turns the counter's raw counts into dose rate. GQ sets it at the factory for this model's tube and everyday background gamma, and it's right for almost every use.</p>
+      <p>Changing it changes every µSv/h figure: the live reading, the alarm when it's set in µSv/h, the radiation levels comparison, dose received, and all past history shown here. The counts themselves don't change.</p>
+      <p><b>Only change it after measuring this counter against a reference source with a known dose rate</b>, as described under "Calibrate the reading" in GQ's manual. A wrong value makes every dose rate wrong, usually without looking wrong.</p>
+      <p class="muted" id="calibration-unlock-baseline"></p>
+      <label class="confirm-check"><input type="checkbox" id="calibration-unlock-ok"> I've measured against a known reference source, and understand that every dose rate will change.</label>
+      <div class="dialog-actions">
+        <button value="cancel" class="button" autofocus>Cancel</button>
+        <button value="unlock" class="button warning" id="calibration-unlock-go" disabled>Unlock calibration</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="calibration-confirm" aria-labelledby="calibration-confirm-title">
+    <form method="dialog">
+      <h2 id="calibration-confirm-title">Save the new calibration to the counter?</h2>
+      <ul id="calibration-confirm-list"></ul>
+      <p>Every dose rate will use these values from now on, including past history shown here. <b>Restore baseline</b> puts the original values back.</p>
+      <div class="dialog-actions">
+        <button value="cancel" class="button" autofocus>Cancel</button>
+        <button value="save" class="button warning" id="calibration-confirm-save">Save calibration</button>
+      </div>
+    </form>
+  </dialog>
 </main>
 <script src="/static/app.js"></script>
 </body>

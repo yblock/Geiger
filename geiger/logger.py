@@ -41,6 +41,7 @@ def describe(counter: Counter, store: Store) -> tuple[Calibration | None, float 
     except DeviceError as e:
         log.error("couldn't put back the counter's settings (%s); trying again next time it connects", e)
     check_and_remember_settings(store, raw)
+    remember_baseline(store, counter.info.serial, raw)
     calibration = store.calibration()
     if calibration is None:
         log.warning("counter reports no usable calibration; showing CPM only")
@@ -67,6 +68,29 @@ def remember_settings(store: Store, raw: bytes) -> None:
     store.set_meta("config", config)
     calibration = Calibration.from_config(config)
     store.set_meta("calibration", calibration.to_dict() if calibration.segments else None)
+
+
+def remember_baseline(store: Store, serial: str, raw: bytes) -> None:
+    """Keep the calibration a counter had the first time Geiger read it, to restore later.
+
+    Saved once per counter (by serial number) and never overwritten, so it stays
+    the counter's own starting point however often the calibration is changed.
+    """
+    baselines = store.get_meta("calibration_baselines") or {}
+    if serial in baselines or settings.incomplete(raw):
+        return
+    points = settings.calibration_points(raw)
+    baselines[serial] = {"at": time.time(), "points": points}
+    store.set_meta("calibration_baselines", baselines)
+    log.info("saved the counter's calibration as its baseline: %s",
+             ", ".join(f"{c} CPM = {u:g} µSv/h" for c, u in points))
+
+
+def baseline_for(store: Store) -> dict | None:
+    """The saved baseline calibration of the counter last connected."""
+    device = store.get_meta("device")
+    baselines = store.get_meta("calibration_baselines") or {}
+    return baselines.get(device["serial"]) if device else None
 
 
 def check_and_remember_settings(store: Store, raw: bytes) -> None:
@@ -296,14 +320,28 @@ class Logger(threading.Thread):
     def settings_view(self) -> dict:
         """The counter's settings as last read, for the dashboard."""
         cached = self.store.get_meta("settings")
+        raw = bytes.fromhex(cached["hex"]) if cached else None
         with self._lock:
             connected = self._state == "live"
+        baseline = baseline_for(self.store)
         return {
             "connected": connected,
             "read_at": cached["at"] if cached else None,
             "problem": self.store.get_meta("settings_problem"),
-            "fields": settings.describe_fields(bytes.fromhex(cached["hex"])) if cached else [],
+            "fields": settings.describe_fields(raw) if raw else [],
+            "calibration_baseline": {
+                **baseline,
+                "matches": bool(raw) and settings.same_calibration(
+                    settings.calibration_points(raw), baseline["points"]),
+            } if baseline else None,
         }
+
+    def restore_calibration(self) -> bytes:
+        """Put the connected counter's calibration back to its saved baseline."""
+        baseline = baseline_for(self.store)
+        if not baseline:
+            raise DeviceError("there's no saved baseline calibration for this counter")
+        return self.submit("write", settings.calibration_changes(baseline["points"]))
 
     def status(self) -> dict:
         with self._lock:

@@ -32,6 +32,10 @@ class FakeLogger:
     def settings_view(self):
         return {"connected": True, "read_at": 0, "fields": settings.describe_fields(demo.SETTINGS)}
 
+    def restore_calibration(self):
+        self.jobs.append(("restore", None))
+        return demo.SETTINGS
+
 
 @pytest.fixture
 def server(tmp_path):
@@ -171,3 +175,21 @@ def test_counter_memory_downloads(server):
     _, _, body = get(server, "/api/counter-memory.csv")
     lines = body.decode().splitlines()
     assert lines[0].startswith("start_utc,") and len(lines) == 4
+
+
+def test_calibration_changes_need_explicit_confirmation(server):
+    status, data = post_json(server, "/api/settings", {"changes": {"cal_cpm_0": 1600}})
+    assert status == 400 and "confirm_calibration" in data["error"]
+    assert not server.logger.jobs  # nothing reached the counter
+    status, _ = post_json(server, "/api/settings", {"changes": {"cal_cpm_0": 1600}, "confirm_calibration": "yes"})
+    assert status == 400  # only a literal true counts
+    status, _ = post_json(server, "/api/settings", {"changes": {"cal_cpm_0": 1600}, "confirm_calibration": True})
+    assert status == 200 and server.logger.jobs[-1] == ("write", {"cal_cpm_0": 1600})
+    # other settings don't need it
+    assert post_json(server, "/api/settings", {"changes": {"led": 0}})[0] == 200
+
+
+def test_calibration_restore(server):
+    status, data = post_json(server, "/api/calibration/restore", {})
+    assert status == 200 and data["ok"]
+    assert server.logger.jobs[-1] == ("restore", None)

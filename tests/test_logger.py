@@ -208,6 +208,40 @@ def test_an_erased_block_is_not_cached_or_changed(tmp_path):
         change_settings(counter, store, {"led": 1})
 
 
+def test_the_first_calibration_seen_is_kept_as_the_baseline(tmp_path):
+    from geiger.logger import change_settings, describe
+
+    store = Store(tmp_path / "test.db")
+    counter = demo.DemoCounter()
+    describe(counter, store)
+    first = store.get_meta("calibration_baselines")[demo.INFO.serial]
+    assert first["points"] == [[1538, 10.0], [15380, 100.0], [30760, 200.0]]
+    change_settings(counter, store, {"cal_cpm_0": 1600})
+    describe(counter, store)  # a later connect never replaces it
+    assert store.get_meta("calibration_baselines")[demo.INFO.serial] == first
+
+
+def test_restore_puts_the_baseline_back(tmp_path):
+    logger = make_logger(tmp_path)
+    logger.connect = demo.DemoCounter
+    logger.backfill = logger.set_clock = False
+    logger.start()
+    try:
+        deadline = time.time() + 10
+        while logger.status()["state"] != "live" and time.time() < deadline:
+            time.sleep(0.05)
+        logger.submit("write", {"cal_cpm_0": 1600, "cal_usv_0": 11.0})
+        assert logger.settings_view()["calibration_baseline"]["matches"] is False
+        logger.restore_calibration()
+        view = logger.settings_view()
+        assert view["calibration_baseline"]["matches"] is True
+        values = {f["key"]: f["value"] for f in view["fields"]}
+        assert (values["cal_cpm_0"], values["cal_usv_0"]) == (1538, 10.0)
+    finally:
+        logger.stop()
+        logger.join(timeout=5)
+
+
 def test_settings_jobs_run_between_readings(tmp_path):
     logger = make_logger(tmp_path)
     logger.connect = demo.DemoCounter

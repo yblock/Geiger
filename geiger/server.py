@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from . import settings
 from .device import DeviceError
 from .history import history_intervals, split_segments
 from .logger import Hub, Logger, backup_path
@@ -104,7 +105,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/sync":
                 self.server.logger.request_sync()
                 self._json({"ok": True}, HTTPStatus.ACCEPTED)
-            elif path in ("/api/settings", "/api/settings/refresh"):
+            elif path in ("/api/settings", "/api/settings/refresh", "/api/calibration/restore"):
                 self._settings_job(path)
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
@@ -128,10 +129,16 @@ class Handler(BaseHTTPRequestHandler):
         logger = self.server.logger
         try:
             if path == "/api/settings":
-                changes = self._read_json().get("changes")
+                body = self._read_json()
+                changes = body.get("changes")
                 if not isinstance(changes, dict) or not changes:
                     raise ValueError("send {\"changes\": {setting: value, ...}}")
+                # calibration changes every dose reading, so it never changes by accident
+                if set(changes) & set(settings.CALIBRATION_KEYS) and body.get("confirm_calibration") is not True:
+                    raise ValueError("calibration changes need \"confirm_calibration\": true")
                 logger.submit("write", changes)
+            elif path == "/api/calibration/restore":
+                logger.restore_calibration()
             else:
                 logger.submit("read")
         except ValueError as e:  # includes bad JSON

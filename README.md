@@ -199,7 +199,19 @@ The same options as the counter's own menus, read from the counter when it conne
 | Calibration | The three CPM ↔ µSv/h points behind every dose-rate reading |
 
 Change any of them, then **Save to counter**. Nothing reaches the counter until you save,
-and only the settings you changed are written. **Read from counter** picks up anything
+and only the settings you changed are written.
+
+Calibration is harder to change on purpose, because it changes every dose rate, past
+readings included:
+- **Locked by default.** Its fields are locked until you click **Change calibration…**,
+  read why you probably shouldn't, and confirm you've measured against a reference source.
+- **Confirmed on save.** Saving then shows each point's old and new values for a final
+  confirmation.
+- **Baseline.** The first time Geiger reads a counter, it keeps that counter's calibration
+  as its baseline, by serial number, and never overwrites it. **Restore baseline** puts it
+  back in one click.
+- **API check.** A calibration change sent to the API without `"confirm_calibration": true`
+  is refused. **Read from counter** picks up anything
 changed with its buttons since it connected. Saving pauses the live reading for about five
 seconds. The counter records those seconds in its own memory, so nothing is lost.
 
@@ -274,7 +286,8 @@ copy the file while the logger isn't running. Its three tables:
   counter's memory).
 - `minutes`: a per-minute rollup that SQLite triggers keep in step.
 - `meta`: the counter's details, settings, a record of the last settings change (old and
-  new block), calibration, measured clock offsets, and the last sync result.
+  new block), calibration and each counter's baseline calibration, measured clock offsets,
+  and the last sync result.
 
 Next to it, `data/counter-memory.bin` is the counter's memory exactly as read at the last
 sync.
@@ -338,7 +351,8 @@ The dashboard is a static page over a small local API:
 | `GET /api/counter-memory.csv` | Every record in the counter's memory at the last sync |
 | `GET /api/counter-memory.bin` | The raw memory image from the last sync |
 | `POST /api/sync` | Start copying the counter's records |
-| `POST /api/settings` | Write `{"changes": {setting: value}}` to the counter; returns its settings afterward |
+| `POST /api/settings` | Write `{"changes": {setting: value}}` to the counter; returns its settings afterward. Calibration changes also need `"confirm_calibration": true` |
+| `POST /api/calibration/restore` | Put the counter's calibration back to its saved baseline |
 | `POST /api/settings/refresh` | Read the settings from the counter again |
 
 POST requests need the header `X-Geiger: 1`, so other web pages can't send them.

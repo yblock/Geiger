@@ -906,6 +906,7 @@ function settingRow(f) {
 function renderSettings() {
   const form = $("settings-form");
   form.replaceChildren();
+  settingsState.calibrationUnlocked = false; // every fresh view of the settings starts locked
   const fields = settingsState.data?.fields ?? [];
   const groups = new Map();
   for (const f of fields) {
@@ -922,10 +923,31 @@ function renderSettings() {
       set.classList.add("calibration");
       const help = document.createElement("p");
       help.className = "help muted";
-      help.textContent = "Each point pairs a CPM reading with the dose rate it stands for; µSv/h readings everywhere follow these. Change them only against a known reference source.";
+      help.textContent = "Each point pairs a CPM reading with the dose rate it stands for. Every µSv/h figure follows these.";
+      const bar = document.createElement("div");
+      bar.className = "calibration-bar";
+      const state = document.createElement("span");
+      state.className = "lock-state";
+      state.id = "calibration-state";
+      const change = document.createElement("button");
+      change.type = "button";
+      change.className = "button";
+      change.id = "calibration-change";
+      change.addEventListener("click", () => (settingsState.calibrationUnlocked ? lockCalibration() : askToUnlockCalibration()));
+      const restore = document.createElement("button");
+      restore.type = "button";
+      restore.className = "button";
+      restore.id = "calibration-restore";
+      restore.textContent = "Restore baseline";
+      restore.addEventListener("click", () =>
+        settingsRequest("/api/calibration/restore", null, "Restoring the baseline calibration…", "Calibration restored to the baseline."));
+      bar.append(state, change, restore);
+      const note = document.createElement("p");
+      note.className = "baseline-note";
+      note.id = "calibration-baseline";
       box = document.createElement("div");
       box.className = "calibration-grid";
-      set.append(help, box);
+      set.append(help, bar, note, box);
     }
     for (const f of members) box.append(settingRow(f));
     form.append(set);
@@ -953,6 +975,7 @@ function updateSettingsUi() {
   }
   const changes = Object.keys(settingsState.draft).length;
   for (const set of $("settings-form").querySelectorAll("fieldset")) set.disabled = !live || settingsState.busy;
+  updateCalibrationUi(live);
   const save = $("settings-save");
   save.disabled = !live || settingsState.busy || !changes || settingsState.invalid.size > 0;
   save.textContent = changes ? `Save ${changes} ${changes === 1 ? "change" : "changes"} to counter` : "Save to counter";
@@ -963,6 +986,74 @@ function updateSettingsUi() {
   else if (!data?.fields.length) status.textContent = "Connect the counter to read its settings.";
   else if (live) status.textContent = `Read from the counter ${fmtWhen(data.read_at)}. Nothing changes on it until you save.`;
   else status.textContent = `What the counter was set to ${fmtWhen(data.read_at)}. Connect it to make changes.`;
+}
+
+// calibration: locked unless deliberately opened, confirmed on save, restorable
+
+const calibrationKeys = () => (settingsState.data?.fields ?? []).filter((f) => f.group === "Calibration").map((f) => f.key);
+const fmtPoint = (cpm, usv) => `${Number(cpm).toLocaleString()} CPM = ${usv == null ? "?" : fmtLevel(usv)} µSv/h`;
+
+function updateCalibrationUi(live) {
+  const state = $("calibration-state");
+  if (!state) return;
+  const unlocked = settingsState.calibrationUnlocked;
+  for (const key of calibrationKeys()) {
+    const input = $(`setting-${key}`);
+    if (input) input.disabled = !unlocked;
+  }
+  state.textContent = unlocked ? "Unlocked for editing" : "Locked";
+  state.classList.toggle("unlocked", unlocked);
+  $("calibration-change").textContent = unlocked ? "Lock" : "Change calibration…";
+  const baseline = settingsState.data?.calibration_baseline;
+  const restore = $("calibration-restore");
+  const note = $("calibration-baseline");
+  restore.hidden = !baseline;
+  if (!baseline) {
+    note.textContent = "No baseline saved yet. It's saved the first time Geiger reads a counter.";
+    return;
+  }
+  const saved = dayYearFmt.format(toDate(baseline.at));
+  note.textContent = `Baseline, saved ${saved} when Geiger first read this counter: ${baseline.points.map(([c, u]) => fmtPoint(c, u)).join("; ")}. `
+    + (baseline.matches ? "The counter matches it." : "The counter's calibration differs from it.");
+  restore.disabled = baseline.matches || !live || settingsState.busy;
+}
+
+function askToUnlockCalibration() {
+  const dialog = $("calibration-unlock");
+  const ok = $("calibration-unlock-ok");
+  ok.checked = false;
+  $("calibration-unlock-go").disabled = true;
+  const baseline = settingsState.data?.calibration_baseline;
+  $("calibration-unlock-baseline").textContent = baseline
+    ? `If you do change it, Restore baseline puts back ${baseline.points.map(([c, u]) => fmtPoint(c, u)).join("; ")} in one click.`
+    : "";
+  dialog.returnValue = "";
+  dialog.showModal();
+}
+
+function lockCalibration() {
+  // drop unsaved calibration edits, keep any others
+  for (const key of calibrationKeys()) {
+    if (key in settingsState.draft || settingsState.invalid.has(key)) {
+      delete settingsState.draft[key];
+      settingsState.invalid.delete(key);
+      $("settings-form").querySelector(`[data-key="${key}"]`).replaceWith(settingRow(settingField(key)));
+    }
+  }
+  settingsState.calibrationUnlocked = false;
+  updateSettingsUi();
+}
+
+function calibrationChangeList() {
+  const items = [];
+  for (let i = 0; i < 3; i++) {
+    const was = [settingField(`cal_cpm_${i}`).value, settingField(`cal_usv_${i}`).value];
+    const now = [settingValue(`cal_cpm_${i}`), settingValue(`cal_usv_${i}`)];
+    if (was[0] !== now[0] || Math.abs(was[1] - now[1]) > 1e-6) {
+      items.push(`Point ${i + 1}: ${fmtPoint(...was)} → ${fmtPoint(...now)}`);
+    }
+  }
+  return items;
 }
 
 async function settingsRequest(path, body, working, done) {
@@ -999,10 +1090,36 @@ async function settingsRequest(path, body, working, done) {
 }
 
 function setupSettings() {
+  const save = (confirmCalibration) => settingsRequest(
+    "/api/settings",
+    { changes: settingsState.draft, ...(confirmCalibration ? { confirm_calibration: true } : {}) },
+    "Writing to the counter…",
+    "Saved to the counter.",
+  );
   $("settings-form").addEventListener("submit", (e) => {
     e.preventDefault();
     if (!Object.keys(settingsState.draft).length) return;
-    settingsRequest("/api/settings", { changes: settingsState.draft }, "Writing to the counter…", "Saved to the counter.");
+    const calibration = calibrationChangeList();
+    if (!calibration.length) {
+      save(false);
+      return;
+    }
+    const list = $("calibration-confirm-list");
+    list.replaceChildren(...calibration.map((text) => Object.assign(document.createElement("li"), { textContent: text })));
+    $("calibration-confirm").returnValue = "";
+    $("calibration-confirm").showModal();
+  });
+  // act on the buttons themselves, never on how a dialog closed: Escape leaves a
+  // dialog's returnValue as it was, so an old "save" could otherwise fire again
+  $("calibration-confirm-save").addEventListener("click", () => save(true));
+  $("calibration-unlock-ok").addEventListener("change", (e) => {
+    $("calibration-unlock-go").disabled = !e.target.checked;
+  });
+  $("calibration-unlock-go").addEventListener("click", () => {
+    if (!$("calibration-unlock-ok").checked) return;
+    settingsState.calibrationUnlocked = true;
+    updateSettingsUi();
+    setTimeout(() => $("setting-cal_cpm_0")?.focus()); // after the dialog has closed
   });
   $("settings-discard").addEventListener("click", () => {
     settingsState.draft = {};

@@ -142,6 +142,25 @@ FIELDS = (
     ),
 )
 BY_KEY = {f.key: f for f in FIELDS}
+CALIBRATION_KEYS = tuple(f.key for f in FIELDS if f.group == "Calibration")
+
+
+def calibration_points(raw: bytes) -> list[list]:
+    """[[cpm, usv_h], ...] for the three calibration points."""
+    v = decode(raw)
+    return [[v[f"cal_cpm_{i}"], v[f"cal_usv_{i}"]] for i in range(3)]
+
+
+def calibration_changes(points: list[list]) -> dict:
+    """The {key: value} changes that set the calibration to `points`."""
+    changes = {}
+    for i, (cpm, usv) in enumerate(points):
+        changes[f"cal_cpm_{i}"], changes[f"cal_usv_{i}"] = cpm, usv
+    return changes
+
+
+def same_calibration(a: list[list], b: list[list]) -> bool:
+    return all(ca == cb and abs(ua - ub) < 1e-4 for (ca, ua), (cb, ub) in zip(a, b))
 
 
 def decode(raw: bytes) -> dict:
