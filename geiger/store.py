@@ -185,6 +185,39 @@ class Store:
         ).fetchone()
         return first[0], min(last[0], end)
 
+    def first_session(self, gap: int, longest: int) -> dict | None:
+        """The earliest recording session, if it lasted at most `longest` seconds.
+
+        A session is a run of intervals with no break longer than `gap`. Returns
+        {start, end, next, sources, records, counts}, `next` being where the following
+        session starts, or None if the first session is longer or is the only one.
+        Stops reading as soon as the answer is known, so it's cheap on big databases.
+        """
+        rows = self._db().execute("SELECT ts, ts + seconds, source FROM counts ORDER BY ts")
+        first = rows.fetchone()
+        if first is None:
+            return None
+        start, end, sources = first[0], first[1], {first[2]}
+        for ts, stop, source in rows:
+            if ts > end + gap:
+                records, counts = self._db().execute(
+                    "SELECT COUNT(*), SUM(count) FROM counts WHERE ts >= ? AND ts < ?", (start, end)
+                ).fetchone()
+                return {"start": start, "end": end, "next": ts, "sources": sorted(sources),
+                        "records": records, "counts": counts}
+            end = max(end, stop)
+            sources.add(source)
+            if end - start > longest:
+                return None
+        return None
+
+    def delete_device_records(self, start: int, end: int) -> int:
+        """Delete records copied from the counter's memory in [start, end)."""
+        with self._db() as db:
+            return db.execute(
+                "DELETE FROM counts WHERE ts >= ? AND ts < ? AND source = ?", (start, end, DEVICE)
+            ).rowcount
+
     def recent(self, since: int) -> list[tuple[int, int, int]]:
         """(ts, seconds, count) rows starting at or after `since`."""
         return self._db().execute(

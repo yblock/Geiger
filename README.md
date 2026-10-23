@@ -76,6 +76,18 @@ uv run geiger sync
 To browse stored history with the counter unplugged, start Geiger as usual. The dashboard
 shows "Counter not connected" above everything you've already collected.
 
+**A brand-new counter** usually arrives with a short session already in its memory, from
+when GQ tested it before shipping. Left in, it stretches the All range back weeks. After a
+sync, Geiger looks for one:
+- the very first session,
+- at most 3 hours long,
+- never seen live,
+- followed by at least a week without readings.
+
+If it finds one, the dashboard offers **Remove factory test** or **Keep it** under the
+chart. Removing it deletes it here and skips it on every later sync. The counter's own
+memory can only be cleared from its menu, which erases everything.
+
 ## Before leaving the counter on its own
 
 - **Its save setting decides what you get back.** Change it under **Counter settings →
@@ -353,6 +365,8 @@ The dashboard is a static page over a small local API:
 | `POST /api/sync` | Start copying the counter's records |
 | `POST /api/settings` | Write `{"changes": {setting: value}}` to the counter; returns its settings afterward. Calibration changes also need `"confirm_calibration": true` |
 | `POST /api/calibration/restore` | Put the counter's calibration back to its saved baseline |
+| `POST /api/factory-test/remove` | Delete the detected factory test and skip it on later syncs |
+| `POST /api/factory-test/keep` | Keep it as real readings and stop offering to remove it |
 | `POST /api/settings/refresh` | Read the settings from the counter again |
 
 POST requests need the header `X-Geiger: 1`, so other web pages can't send them.

@@ -107,6 +107,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True}, HTTPStatus.ACCEPTED)
             elif path in ("/api/settings", "/api/settings/refresh", "/api/calibration/restore"):
                 self._settings_job(path)
+            elif path in ("/api/factory-test/remove", "/api/factory-test/keep"):
+                try:
+                    deleted = self.server.logger.settle_factory_test(remove=path.endswith("remove"))
+                except ValueError as e:
+                    self._json({"error": str(e)}, HTTPStatus.CONFLICT)
+                else:
+                    self._json({"ok": True, "deleted": deleted})
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
         except (BrokenPipeError, ConnectionResetError):

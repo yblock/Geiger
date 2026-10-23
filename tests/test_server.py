@@ -193,3 +193,13 @@ def test_calibration_restore(server):
     status, data = post_json(server, "/api/calibration/restore", {})
     assert status == 200 and data["ok"]
     assert server.logger.jobs[-1] == ("restore", None)
+
+
+def test_factory_test_endpoints(server):
+    calls = []
+    server.logger.settle_factory_test = lambda remove: calls.append(remove) or 3000
+    status, data = post_json(server, "/api/factory-test/remove", {})
+    assert status == 200 and data["deleted"] == 3000
+    assert post_json(server, "/api/factory-test/keep", {})[0] == 200
+    assert calls == [True, False]
+    assert status_of(server, "/api/factory-test/remove", method="POST") == 403  # needs the header

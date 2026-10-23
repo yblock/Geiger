@@ -286,3 +286,74 @@ def test_rolling_cpm_estimates_until_the_window_fills(tmp_path):
         reading = logger.hub.wait(0, 0)[-1][2]
         assert reading["window"] == min(i + 1, 60)
     assert reading["cpm"] == 30
+
+
+def _marker(when):
+    stamp = [when.year - 2000, when.month, when.day, when.hour, when.minute, when.second]
+    return b"\x55\xaa\x00" + bytes(stamp) + b"\x55\xaa\x01"
+
+
+class FlashCounter(demo.DemoCounter):
+    """A counter whose memory holds a factory test weeks back, then the owner's readings."""
+
+    def __init__(self, sessions):
+        super().__init__()
+        self.image = b"".join(_marker(when) + bytes([1] * seconds) for when, seconds in sessions)
+
+    def read_history(self, progress=None):
+        from geiger.history import split_segments
+
+        return Flash(self.image, split_segments(self.image), False, len(self.image), 2**20)
+
+
+def _ago(**delta):
+    import datetime
+
+    return (datetime.datetime.now() - datetime.timedelta(**delta)).replace(microsecond=0)
+
+
+def test_a_factory_test_is_found_removed_and_never_copied_back(tmp_path):
+    from geiger.logger import describe, remove_factory_test, sync_history
+
+    store = Store(tmp_path / "test.db")
+    counter = FlashCounter([(_ago(days=56), 3000), (_ago(hours=3), 3600)])
+    describe(counter, store)
+    sync_history(counter, store)
+    found = store.get_meta("factory_test")
+    assert found and found["records"] == 3000 and found["end"] - found["start"] == 3000
+    first_real = found["next"]
+
+    assert remove_factory_test(store) == 3000
+    assert store.bounds()[0] == first_real
+    assert store.get_meta("factory_test") is None
+    sync_history(counter, store)  # still in the counter's memory
+    assert store.bounds()[0] == first_real  # but not copied back in
+    assert store.get_meta("factory_test") is None
+
+
+@pytest.mark.parametrize("sessions, why", [
+    ([(_ago(days=56), 5 * 3600), (_ago(hours=3), 3600)], "too long for a factory test"),
+    ([(_ago(days=3), 3000), (_ago(hours=3), 3600)], "not far enough before the rest"),
+    ([(_ago(hours=3), 3600)], "only one session"),
+])
+def test_ordinary_history_isnt_mistaken_for_a_factory_test(tmp_path, sessions, why):
+    from geiger.logger import describe, sync_history
+
+    store = Store(tmp_path / "test.db")
+    counter = FlashCounter(sessions)
+    describe(counter, store)
+    sync_history(counter, store)
+    assert store.get_meta("factory_test") is None, why
+
+
+def test_a_kept_session_isnt_offered_again(tmp_path):
+    from geiger.logger import describe, keep_factory_test, sync_history
+
+    store = Store(tmp_path / "test.db")
+    counter = FlashCounter([(_ago(days=56), 3000), (_ago(hours=3), 3600)])
+    describe(counter, store)
+    sync_history(counter, store)
+    keep_factory_test(store)
+    sync_history(counter, store)
+    assert store.get_meta("factory_test") is None
+    assert store.bounds()[0] < store.get_meta("factory_test_kept")[1]  # still stored

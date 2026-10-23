@@ -259,6 +259,23 @@ h2 {
 
 .notice.error { border-left-color: var(--critical); }
 
+.notice.factory-test {
+  margin-top: 18px;
+  border-left-color: var(--series);
+}
+
+.notice.factory-test p { max-width: 80ch; }
+
+.factory-test-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-top: 12px;
+}
+
+.factory-test-actions .button { font-size: 14px; padding: 6px 12px; }
+
 /* history */
 
 .history {

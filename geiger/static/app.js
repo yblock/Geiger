@@ -204,7 +204,43 @@ function renderStatus() {
 
   renderFacts();
   renderMemory();
+  renderFactoryTest();
   updateSettingsUi();
+}
+
+// a new counter arrives with GQ's pre-shipping test in its memory; offer to drop it
+
+function renderFactoryTest() {
+  const found = app.status?.factory_test;
+  const box = $("factory-test");
+  box.hidden = !found;
+  if (!found) return;
+  $("factory-test-text").textContent =
+    `Your history starts with ${fmtDuration(found.end - found.start)} recorded on ${dayYearFmt.format(toDate(found.start))}, `
+    + `${fmtDuration(found.next - found.end)} before any of your other readings. That's almost certainly GQ testing the counter `
+    + "before it shipped. Removing it starts your history at your own first reading, and it won't be copied in again. "
+    + "The counter's memory keeps it until you erase that from the counter's menu (see Counter memory).";
+}
+
+async function settleFactoryTest(action) {
+  const result = $("factory-test-result");
+  for (const b of $("factory-test").querySelectorAll("button")) b.disabled = true;
+  result.className = "settings-result";
+  result.textContent = action === "remove" ? "Removing…" : "";
+  try {
+    const res = await fetch(`/api/factory-test/${action}`, { method: "POST", headers: { "X-Geiger": "1" } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+    if (app.status) app.status.factory_test = null;
+    renderFactoryTest();
+    result.textContent = "";
+    if (action === "remove") loadSeries();
+  } catch (e) {
+    result.classList.add("error");
+    result.textContent = e.message;
+  } finally {
+    for (const b of $("factory-test").querySelectorAll("button")) b.disabled = false;
+  }
 }
 
 function renderFacts() {
@@ -1090,6 +1126,8 @@ async function settingsRequest(path, body, working, done) {
 }
 
 function setupSettings() {
+  $("factory-test-remove").addEventListener("click", () => settleFactoryTest("remove"));
+  $("factory-test-keep").addEventListener("click", () => settleFactoryTest("keep"));
   const save = (confirmCalibration) => settingsRequest(
     "/api/settings",
     { changes: settingsState.draft, ...(confirmCalibration ? { confirm_calibration: true } : {}) },

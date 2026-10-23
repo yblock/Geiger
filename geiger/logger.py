@@ -16,7 +16,7 @@ from . import settings
 from .calibration import Calibration
 from .device import Counter, DeviceError
 from .history import history_intervals
-from .store import Store
+from .store import DEVICE, Store
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +28,10 @@ BACKFILL_COOLDOWN = 600
 MAX_MISSED_READS = 3
 # Counter clock error worth correcting (seconds). Readings of it carry ±0.5 s of noise.
 CLOCK_TOLERANCE = 3.0
+# A first session at most this long, then this long without readings, looks like
+# the test GQ runs before shipping (seconds).
+FACTORY_TEST_LONGEST = 3 * 3600
+FACTORY_TEST_GAP = 7 * 86400
 
 def describe(counter: Counter, store: Store) -> tuple[Calibration | None, float | None, float]:
     """Read and remember the counter's identity, settings, calibration, and clock.
@@ -190,9 +194,16 @@ def sync_history(counter: Counter, store: Store, progress=None) -> dict:
         finished = time.time()
         # leave the last couple of seconds to the live stream that resumes next
         rows, dropped = history_intervals(flash.segments, offsets, until=finished - 2)
+        # a removed factory test stays in the counter's memory; don't copy it back
+        cutoff = (store.get_meta("ignore_before") or {}).get(counter.info.serial)
+        if cutoff:
+            kept = [r for r in rows if r[0] >= cutoff]
+            dropped += len(rows) - len(kept)
+            rows = kept
         imported, skipped = store.import_intervals(rows)
         if flash.image:
             backup_path(store).write_bytes(flash.image)
+        detect_factory_test(store)
         result = {
             "at": finished,
             "duration": round(finished - started, 1),
@@ -218,6 +229,53 @@ def sync_history(counter: Counter, store: Store, progress=None) -> dict:
         result = {"at": time.time(), "error": str(e)}
     store.set_meta("last_sync", result)
     return result
+
+
+def detect_factory_test(store: Store) -> dict | None:
+    """Find a probable factory test at the start of the history, and remember it.
+
+    New GQ counters arrive with a short session already in memory, recorded when
+    they were tested before shipping. It shows up as the earliest session: short,
+    copied from the counter's memory rather than seen live, and followed by at
+    least a week without readings. Nothing is removed here; the dashboard asks.
+    """
+    found = store.first_session(gap=3600, longest=FACTORY_TEST_LONGEST)
+    kept = store.get_meta("factory_test_kept")
+    if (
+        not found
+        or found["sources"] != [DEVICE]
+        or found["next"] - found["end"] < FACTORY_TEST_GAP
+        or (kept and kept == [found["start"], found["end"]])
+    ):
+        found = None
+    else:
+        del found["sources"]
+    store.set_meta("factory_test", found)
+    return found
+
+
+def remove_factory_test(store: Store) -> int:
+    """Delete the detected factory test, and skip it on every future sync."""
+    found = store.get_meta("factory_test")
+    if not found:
+        raise ValueError("there's no factory test to remove")
+    deleted = store.delete_device_records(found["start"], found["end"])
+    device = store.get_meta("device")
+    if device:
+        cutoffs = store.get_meta("ignore_before") or {}
+        cutoffs[device["serial"]] = max(cutoffs.get(device["serial"], 0), found["end"])
+        store.set_meta("ignore_before", cutoffs)
+    log.info("removed the factory test (%d records)", deleted)
+    detect_factory_test(store)
+    return deleted
+
+
+def keep_factory_test(store: Store) -> None:
+    """Treat the detected session as real readings: stop offering to remove it."""
+    found = store.get_meta("factory_test")
+    if found:
+        store.set_meta("factory_test_kept", [found["start"], found["end"]])
+    store.set_meta("factory_test", None)
 
 
 def backup_path(store: Store) -> Path:
@@ -267,6 +325,7 @@ class Logger(threading.Thread):
         self.set_clock = set_clock
         self.connect = connect
         self.calibration: Calibration | None = store.calibration()
+        detect_factory_test(store)  # also for history synced before this check existed
 
         self._stop_event = threading.Event()
         self._sync_requested = threading.Event()
@@ -293,6 +352,12 @@ class Logger(threading.Thread):
 
     def request_sync(self) -> None:
         self._sync_requested.set()
+
+    def settle_factory_test(self, remove: bool) -> int:
+        """Remove the detected factory test (returns rows deleted) or keep it (0)."""
+        deleted = remove_factory_test(self.store) if remove else keep_factory_test(self.store) or 0
+        self._publish_status()
+        return deleted
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -366,6 +431,7 @@ class Logger(threading.Thread):
                 "last_sync": self.store.get_meta("last_sync"),
                 "reading": self._reading,
                 "bounds": self.store.bounds(),
+                "factory_test": self.store.get_meta("factory_test"),
             }
 
     # worker
