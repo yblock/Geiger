@@ -13,6 +13,7 @@
   --good: #0ca30c;
   --good-text: #006300;
   --warning: #fab219;
+  --serious: #ec835a;
   --critical: #d03b3b;
   --critical-text: #b22d2d;
   --focus: #2a78d6;
@@ -460,6 +461,81 @@ th {
 
 .text-link:hover { color: var(--ink); }
 
+/* radiation levels */
+
+.levels {
+  padding: 32px 0 36px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.levels-intro {
+  margin-top: 6px;
+  max-width: 72ch;
+  font-size: 15px;
+}
+
+/* inset by the width of the current-row marker so the text lines up with the heading */
+.levels-table {
+  width: calc(100% + 12px);
+  margin: 18px 0 0 -12px;
+  font-variant-numeric: normal;
+}
+
+.levels-table th,
+.levels-table td {
+  position: static;
+  padding: 10px 16px 10px 0;
+  background: none;
+  text-align: left;
+  vertical-align: top;
+}
+
+.levels-table tr > :first-child { padding-left: 12px; }
+.levels-table thead th { padding-top: 0; }
+.levels-table tbody th { font-weight: 600; color: var(--ink); white-space: nowrap; }
+.levels-table td:nth-child(2),
+.levels-table td:nth-child(3) { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.levels-table td:last-child { color: var(--ink-2); max-width: 52ch; }
+
+.levels-table tr.current { background: var(--surface); }
+.levels-table tr.current > :first-child { box-shadow: inset 3px 0 0 var(--ink); }
+
+.level {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.level::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--good);
+}
+
+.level[data-level="concerning"]::before { background: var(--warning); }
+.level[data-level="harmful"]::before { background: var(--serious); }
+.level[data-level="deadly"]::before { background: var(--critical); }
+
+.level-now {
+  display: block;
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-2);
+}
+
+.level-now:empty { display: none; }
+
+.levels-note {
+  margin-top: 14px;
+  max-width: 72ch;
+  font-size: 13px;
+}
+
+.levels-note a { color: inherit; text-underline-offset: 2px; }
+
 /* device */
 
 .device { padding-top: 32px; }
@@ -532,4 +608,29 @@ th {
   .controls h2 { width: 100%; }
   .segmented { flex-wrap: wrap; }
   .stats dd:not(.sub) { font-size: 22px; }
+
+  /* stack each level: name, then rate and total side by side, then the explanation */
+  .levels-table thead { display: none; }
+  .levels-table tr {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 16px;
+    padding: 12px 0 12px 12px;
+    border-bottom: 1px solid var(--grid);
+  }
+  .levels-table th,
+  .levels-table td,
+  .levels-table tr > :first-child { padding: 0; border: 0; }
+  .levels-table tbody th,
+  .levels-table td:last-child { grid-column: 1 / -1; max-width: none; }
+  .levels-table td:last-child { margin-top: 6px; }
+  .levels-table td[data-label] { margin-top: 6px; white-space: normal; }
+  .levels-table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .levels-table tr.current { box-shadow: inset 3px 0 0 var(--ink); }
+  .levels-table tr.current > :first-child { box-shadow: none; }
 }

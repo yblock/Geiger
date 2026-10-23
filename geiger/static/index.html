@@ -81,6 +81,43 @@
     </div>
   </section>
 
+  <section class="levels" aria-labelledby="levels-heading">
+    <h2 id="levels-heading">Radiation levels</h2>
+    <p class="levels-intro muted">The counter shows a dose rate, but health effects depend on the total dose it adds up to. Each rate is paired with the total from a year at that rate (or a few days, in the last row).</p>
+    <table class="levels-table" id="levels">
+      <thead>
+        <tr><th scope="col">Level</th><th scope="col">Dose rate</th><th scope="col">Total dose</th><th scope="col">What it means</th></tr>
+      </thead>
+      <tbody>
+        <tr data-below="1">
+          <th scope="row"><span class="level" data-level="safe">Safe</span><span class="level-now"></span></th>
+          <td data-label="Dose rate">under 1 µSv/h</td>
+          <td data-label="Total dose">under 10 mSv a year</td>
+          <td>Normal background is 0.05–0.3 µSv/h, about 2–3 mSv a year; higher readings are worth a look. A CT scan of the abdomen is about 10 mSv.</td>
+        </tr>
+        <tr data-below="10">
+          <th scope="row"><span class="level" data-level="concerning">Concerning</span><span class="level-now"></span></th>
+          <td data-label="Dose rate">1–10 µSv/h</td>
+          <td data-label="Total dose">10–100 mSv a year</td>
+          <td>Fine for hours, like a flight at cruising altitude (about 6 µSv/h), but not a place to live. Radiation workers are limited to 20 mSv a year.</td>
+        </tr>
+        <tr data-below="10000">
+          <th scope="row"><span class="level" data-level="harmful">Harmful</span><span class="level-now"></span></th>
+          <td data-label="Dose rate">10 µSv/h – 10 mSv/h</td>
+          <td data-label="Total dose">100 mSv – 1 Sv</td>
+          <td>No added cancer risk has been detected below about 100 mSv; above it, lifetime risk rises by roughly 0.5% per 100 mSv. Leave and find the source.</td>
+        </tr>
+        <tr data-below="Infinity">
+          <th scope="row"><span class="level" data-level="deadly">Deadly</span><span class="level-now"></span></th>
+          <td data-label="Dose rate">over 10 mSv/h</td>
+          <td data-label="Total dose">over 1 Sv within days</td>
+          <td>Above about 0.7 Sv over a short time, radiation sickness sets in; 2.5–5 Sv kills about half of those exposed, and over 10 Sv is almost always fatal.</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="levels-note muted">A rough guide for context, not safety advice. In very strong fields a Geiger tube can saturate and read low, so treat high or erratic readings as a reason to move away first. Figures from the <a href="https://www.cdc.gov/radiation-emergencies/hcp/clinical-guidance/ars.html" target="_blank" rel="noopener">CDC</a>, <a href="https://www.icrp.org/publication.asp?id=ICRP%20Publication%20103" target="_blank" rel="noopener">ICRP</a>, and <a href="https://hps.org/wp-content/uploads/2024/12/radiationrisk.pdf" target="_blank" rel="noopener">Health Physics Society</a>.</p>
+  </section>
+
   <section class="device" aria-labelledby="device-heading">
     <div class="device-head">
       <h2 id="device-heading">Counter</h2>

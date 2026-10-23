@@ -15,24 +15,36 @@ history whether or not the counter is connected.
 - A USB cable that carries data. A charge-only cable powers the counter, but no serial
   port appears.
 - [uv](https://docs.astral.sh/uv/), which installs Python 3.10 or later if you don't
-  have it.
-- A Mac. The logger itself would likely run on Linux, but `install-agent` is macOS-only.
+  have it. The start script below offers to install uv for you.
+- A Mac. The logger itself would likely run on Linux, but the start script and
+  `install-agent` are macOS-only.
 
-Then, from this folder:
+## Start
+
+**Double-click `Start Geiger.command`** in this folder. It opens a Terminal window and
+then:
+- offers to install uv if it's missing, using Homebrew when you have it and uv's official
+  installer otherwise. Nothing is installed unless you answer `y`.
+- installs or updates Geiger's packages with `uv sync`.
+- starts the logger and opens the dashboard in your browser.
+
+If Geiger is already running, it just opens the dashboard. Close the window, or press
+Ctrl-C in it, to stop the logger.
+
+macOS may block the script the first time if the folder came from a downloaded zip rather
+than `git clone`. In that case, right-click the file, choose Open, then confirm.
+
+From a terminal, the same thing is:
 
 ```bash
 uv sync
+uv run geiger run
 ```
 
 ## A typical session
 
 1. Plug the counter into the Mac and switch it on.
-2. Start the logger and open the dashboard at <http://localhost:8320>:
-
-   ```bash
-   uv run geiger run
-   ```
-
+2. Start Geiger as above. The dashboard is at <http://localhost:8320>.
 3. On connecting, the logger:
    - copies everything the counter recorded while away. The dashboard shows progress.
      A nearly empty memory takes a couple of seconds; a full one takes a few minutes.
@@ -41,9 +53,10 @@ uv sync
 4. Watch the live reading, browse history, export what you need.
 5. Unplug whenever you like. Every reading is saved the moment it arrives, so there's
    nothing to stop or flush first. The dashboard switches to "Counter not connected" and
-   keeps serving history until you press Ctrl-C in the terminal. Unplugging while history
-   is being copied is harmless too: nothing from a partial copy is kept, and it starts over
-   next time. The counter keeps recording to its own memory until the next visit.
+   keeps serving history until you close the Terminal window or press Ctrl-C.
+   Unplugging while history is being copied is harmless too: nothing from a partial copy
+   is kept, and it starts over next time. The counter keeps recording to its own memory
+   until the next visit.
 
 The counter can be plugged in after the logger starts; it's picked up within about 30
 seconds. To copy the records without opening the dashboard:
@@ -52,8 +65,8 @@ seconds. To copy the records without opening the dashboard:
 uv run geiger sync
 ```
 
-To browse stored history with the counter unplugged, run `uv run geiger run` as usual. The
-dashboard shows "Counter not connected" above everything you've already collected.
+To browse stored history with the counter unplugged, start Geiger as usual. The dashboard
+shows "Counter not connected" above everything you've already collected.
 
 ## Before leaving the counter on its own
 
@@ -126,6 +139,24 @@ are normal.
 **Data table** lists what the chart is plotting, newest first. **Download CSV** gives
 per-minute rows for the selected range: UTC time, local time, counts, seconds recorded,
 CPM, and µSv/h. That works for spreadsheets or comparing with other monitors.
+
+### Radiation levels
+
+A reference table puts readings in context, and marks the row the latest reading falls in:
+
+| Level | Dose rate | Total dose |
+|---|---|---|
+| Safe | under 1 µSv/h | under 10 mSv a year |
+| Concerning | 1–10 µSv/h | 10–100 mSv a year |
+| Harmful | 10 µSv/h – 10 mSv/h | 100 mSv – 1 Sv |
+| Deadly | over 10 mSv/h | over 1 Sv within days |
+
+Each row explains what the level means, with comparisons such as a CT scan, a flight, or
+the limit for radiation workers. The figures come from the
+[CDC](https://www.cdc.gov/radiation-emergencies/hcp/clinical-guidance/ars.html),
+[ICRP](https://www.icrp.org/publication.asp?id=ICRP%20Publication%20103), and
+[Health Physics Society](https://hps.org/wp-content/uploads/2024/12/radiationrisk.pdf).
+It's a rough guide, not safety advice.
 
 ### Counter panel
 

@@ -99,7 +99,9 @@ def cmd_run(args) -> int:
     except OSError as e:
         sys.exit(f"geiger: can't serve on port {args.http_port} ({e.strerror}); "
                  "is another logger running? Use --http-port to pick another.")
-    signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown).start())
+    # SIGHUP arrives when the Terminal window running Start Geiger.command is closed
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda *_: threading.Thread(target=server.shutdown).start())
     logger.start()
     log.info("dashboard: http://%s:%d", "localhost" if args.host == "127.0.0.1" else args.host,
              args.http_port)

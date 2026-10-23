@@ -290,11 +290,27 @@ function renderReading() {
       verdict.append(` ${over ? "At or above" : "Below"} the counter's alarm level of ${fmtLevel(alarm)} µSv/h`);
     }
   }
+  renderLevels(r && (r.usv_h ?? app.toUsv?.(r.cpm)), live);
   const b = app.baseline;
   $("baseline").textContent = b != null
     ? `7-day average ${fmtCpm(b)} CPM${app.toUsv ? `, ${fmtUsv(app.toUsv(b))} µSv/h` : ""}`
     : "";
   renderStatusTitle();
+}
+
+// mark the radiation-levels row the latest reading falls in
+function renderLevels(usv, live) {
+  let found = false;
+  for (const row of $("levels").tBodies[0].rows) {
+    const here = usv != null && !found && usv < Number(row.dataset.below);
+    found ||= here;
+    row.classList.toggle("current", here);
+    const label = row.querySelector(".level-now");
+    const text = here ? `${live ? "Now" : "Last reading"}: ${fmtUsv(usv)} µSv/h` : "";
+    if (label.textContent !== text) label.textContent = text;
+    if (here) row.setAttribute("aria-current", "true");
+    else row.removeAttribute("aria-current");
+  }
 }
 
 function renderStatusTitle() {
