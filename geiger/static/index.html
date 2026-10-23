@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Geiger</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,300..800&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main>
+  <header class="masthead">
+    <div class="ident">
+      <h1 id="model">Geiger counter</h1>
+      <span class="state" id="state" data-state="starting"><span class="dot" aria-hidden="true"></span><span id="state-text">Starting</span></span>
+    </div>
+    <p class="ident-detail" id="ident-detail"></p>
+  </header>
+
+  <section class="now" aria-labelledby="now-heading">
+    <h2 id="now-heading" class="visually-hidden">Current reading</h2>
+    <div class="readout">
+      <p class="dose" aria-live="polite"><span id="dose">–</span><span class="unit">µSv/h</span></p>
+      <p class="rate"><span id="cpm">–</span> CPM <span id="window-note" class="muted"></span></p>
+      <p class="verdict" id="verdict" hidden></p>
+      <p class="baseline muted" id="baseline"></p>
+    </div>
+    <figure class="tape">
+      <canvas id="tape" aria-label="Each tick is one detected particle over the last two minutes" role="img"></canvas>
+      <figcaption>
+        <span>2 min ago</span>
+        <span id="tape-count" class="muted"></span>
+        <span>now</span>
+      </figcaption>
+    </figure>
+    <p class="notice" id="notice" hidden></p>
+  </section>
+
+  <section class="history" aria-labelledby="history-heading">
+    <div class="controls">
+      <h2 id="history-heading">Dose rate over time</h2>
+      <div class="segmented" role="radiogroup" aria-label="Time range" id="ranges">
+        <button type="button" role="radio" data-range="10m">10 min</button>
+        <button type="button" role="radio" data-range="1h">1 h</button>
+        <button type="button" role="radio" data-range="6h">6 h</button>
+        <button type="button" role="radio" data-range="24h">24 h</button>
+        <button type="button" role="radio" data-range="7d">7 days</button>
+        <button type="button" role="radio" data-range="30d">30 days</button>
+        <button type="button" role="radio" data-range="all">All</button>
+      </div>
+      <div class="segmented" role="radiogroup" aria-label="Unit" id="units">
+        <button type="button" role="radio" data-unit="usv">µSv/h</button>
+        <button type="button" role="radio" data-unit="cpm">CPM</button>
+      </div>
+    </div>
+
+    <div class="chart" id="chart-wrap">
+      <svg id="chart" role="img" aria-labelledby="chart-caption" tabindex="0"></svg>
+      <div class="tooltip" id="tooltip" hidden></div>
+      <p class="empty" id="chart-empty" hidden></p>
+    </div>
+    <p class="caption muted" id="chart-caption"></p>
+
+    <dl class="stats" id="stats">
+      <div><dt>Average</dt><dd id="s-mean">–</dd><dd class="sub" id="s-mean-sub"></dd></div>
+      <div><dt>Busiest minute</dt><dd id="s-peak">–</dd><dd class="sub" id="s-peak-sub"></dd></div>
+      <div><dt>Quietest minute</dt><dd id="s-min">–</dd><dd class="sub" id="s-min-sub"></dd></div>
+      <div><dt>Dose received</dt><dd id="s-dose">–</dd><dd class="sub" id="s-dose-sub"></dd></div>
+      <div><dt>Recorded</dt><dd id="s-coverage">–</dd><dd class="sub" id="s-coverage-sub"></dd></div>
+    </dl>
+
+    <div class="below-chart">
+      <details id="table-details">
+        <summary>Data table</summary>
+        <div class="table-scroll"><table id="table"><thead><tr><th scope="col">Time</th><th scope="col" id="table-unit">µSv/h</th><th scope="col">CPM</th><th scope="col">Minute range, CPM</th></tr></thead><tbody></tbody></table></div>
+      </details>
+      <a id="export" class="text-link" href="#" download>Download CSV</a>
+    </div>
+  </section>
+
+  <section class="device" aria-labelledby="device-heading">
+    <div class="device-head">
+      <h2 id="device-heading">Counter</h2>
+      <button type="button" id="sync" class="button">Sync device history</button>
+    </div>
+    <p class="sync-status muted" id="sync-status"></p>
+    <dl class="facts" id="facts"></dl>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
