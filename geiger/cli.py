@@ -27,8 +27,19 @@ AGENT_LABEL = "local.geiger"
 AGENT_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{AGENT_LABEL}.plist"
 
 
-def main(argv: list[str] | None = None) -> None:
-    common = argparse.ArgumentParser(add_help=False)
+def build_parser() -> argparse.ArgumentParser:
+    # Parent parsers share their option objects with every subcommand that uses them,
+    # so a subcommand needing a different default gets its own option instead.
+    serving = argparse.ArgumentParser(add_help=False)
+    serving.add_argument(
+        "--http-port",
+        type=int,
+        default=int(os.environ.get("GEIGER_HTTP_PORT", 8320)),
+        help="dashboard port (default: 8320)",
+    )
+    serving.add_argument("-v", "--verbose", action="store_true", help="debug logging")
+
+    common = argparse.ArgumentParser(add_help=False, parents=[serving])
     common.add_argument(
         "--db",
         default=os.environ.get("GEIGER_DB", "data/geiger.db"),
@@ -39,13 +50,6 @@ def main(argv: list[str] | None = None) -> None:
         default=os.environ.get("GEIGER_DEVICE"),
         help="serial port, e.g. /dev/cu.usbserial-210 (default: auto-detect)",
     )
-    common.add_argument(
-        "--http-port",
-        type=int,
-        default=int(os.environ.get("GEIGER_HTTP_PORT", 8320)),
-        help="dashboard port (default: 8320)",
-    )
-    common.add_argument("-v", "--verbose", action="store_true", help="debug logging")
 
     parser = argparse.ArgumentParser(prog="geiger", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -60,9 +64,11 @@ def main(argv: list[str] | None = None) -> None:
     )
     sub.add_parser("uninstall-agent", parents=[common], help="stop and remove the launchd agent")
     demo = sub.add_parser(
-        "demo", parents=[common], help="try the dashboard with a simulated counter and made-up history"
+        "demo", parents=[serving], help="try the dashboard with a simulated counter and made-up history"
     )
-    demo.set_defaults(db=None)  # never the real database unless --db is given
+    demo.add_argument(
+        "--db", default=None, help="database for the demo (default: a new temporary file)"
+    )
     demo.add_argument(
         "--host", default="127.0.0.1", help="interface to serve on; 0.0.0.0 for your network"
     )
@@ -79,8 +85,11 @@ def main(argv: list[str] | None = None) -> None:
             action="store_true",
             help="leave the counter's clock alone (by default it's kept at this Mac's local time)",
         )
+    return parser
 
-    args = parser.parse_args(argv)
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
