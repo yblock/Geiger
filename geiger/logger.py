@@ -238,6 +238,10 @@ class Logger(threading.Thread):
                 if str(e) != self._error:  # don't repeat the same complaint every retry
                     log.warning("counter unavailable: %s", e)
                 self._set_state("offline", str(e))
+            except OSError as e:  # pyserial's SerialException included: the cable was pulled
+                if self._error != "counter disconnected":
+                    log.warning("counter disconnected (%s)", e)
+                self._set_state("offline", "counter disconnected")
             except Exception as e:  # serial errors on unplug, and anything unforeseen
                 message = f"{type(e).__name__}: {e}"
                 if message != self._error:

@@ -39,8 +39,11 @@ uv sync
    - sets the counter's clock to the Mac's local time if it has drifted more than 3 s.
    - streams live readings, one per second.
 4. Watch the live reading, browse history, export what you need.
-5. Press Ctrl-C in the terminal, then unplug. The counter keeps recording to its own
-   memory until the next visit.
+5. Unplug whenever you like. Every reading is saved the moment it arrives, so there's
+   nothing to stop or flush first. The dashboard switches to "Counter not connected" and
+   keeps serving history until you press Ctrl-C in the terminal. Unplugging while history
+   is being copied is harmless too: nothing from a partial copy is kept, and it starts over
+   next time. The counter keeps recording to its own memory until the next visit.
 
 The counter can be plugged in after the logger starts; it's picked up within about 30
 seconds. To copy the records without opening the dashboard:
