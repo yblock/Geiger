@@ -161,6 +161,7 @@ class Logger(threading.Thread):
         port: str | None = None,
         backfill: bool = True,
         set_clock: bool = True,
+        connect=Counter,  # demo mode passes a simulated counter
     ):
         super().__init__(name="geiger-logger", daemon=True)
         self.store = store
@@ -168,6 +169,7 @@ class Logger(threading.Thread):
         self.port = port
         self.backfill = backfill
         self.set_clock = set_clock
+        self.connect = connect
         self.calibration: Calibration | None = store.calibration()
 
         self._stop_event = threading.Event()
@@ -230,7 +232,7 @@ class Logger(threading.Thread):
             counter = None
             try:
                 self._set_state("connecting")
-                counter = Counter(self.port)
+                counter = self.connect(self.port)
                 self._on_connect(counter)
                 retry = 2.0
                 self._stream(counter)

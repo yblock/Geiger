@@ -10,6 +10,7 @@ import plistlib
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import urllib.error
 import urllib.request
@@ -58,6 +59,13 @@ def main(argv: list[str] | None = None) -> None:
         "install-agent", parents=[common], help="run the logger in the background at login (launchd)"
     )
     sub.add_parser("uninstall-agent", parents=[common], help="stop and remove the launchd agent")
+    demo = sub.add_parser(
+        "demo", parents=[common], help="try the dashboard with a simulated counter and made-up history"
+    )
+    demo.set_defaults(db=None)  # never the real database unless --db is given
+    demo.add_argument(
+        "--host", default="127.0.0.1", help="interface to serve on; 0.0.0.0 for your network"
+    )
     for p in (run, agent):
         p.add_argument(
             "--host", default="127.0.0.1", help="interface to serve on; 0.0.0.0 for your network"
@@ -79,7 +87,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     if not args.verbose:
         logging.getLogger("pygmc").setLevel(logging.ERROR)
-        if args.command != "run":  # one-shot commands print their own summary
+        if args.command not in ("run", "demo"):  # one-shot commands print their own summary
             logging.getLogger("geiger.logger").setLevel(logging.WARNING)
     try:
         sys.exit(COMMANDS[args.command](args))
@@ -93,6 +101,26 @@ def cmd_run(args) -> int:
     logger = Logger(
         store, hub, port=args.device, backfill=not args.no_backfill, set_clock=not args.no_set_clock
     )
+    return _serve(args, store, logger, hub)
+
+
+def cmd_demo(args) -> int:
+    from . import demo
+
+    if args.db is None:
+        args.db = str(Path(tempfile.mkdtemp(prefix="geiger-demo-")) / "demo.db")
+    store = Store(args.db)
+    if store.bounds() is None:
+        demo.seed(store)
+    elif (store.get_meta("device") or {}).get("serial") != demo.INFO.serial:
+        sys.exit(f"geiger: {args.db} holds real readings; give the demo a new file")
+    log.info("demo data in %s", args.db)
+    hub = Hub()
+    logger = Logger(store, hub, backfill=False, set_clock=False, connect=demo.DemoCounter)
+    return _serve(args, store, logger, hub)
+
+
+def _serve(args, store: Store, logger: Logger, hub: Hub) -> int:
     # bind before touching the counter so a port clash fails cleanly
     try:
         server = DashboardServer((args.host, args.http_port), store, logger, hub)
@@ -259,4 +287,5 @@ COMMANDS = {
     "set-clock": cmd_set_clock,
     "install-agent": cmd_install_agent,
     "uninstall-agent": cmd_uninstall_agent,
+    "demo": cmd_demo,
 }

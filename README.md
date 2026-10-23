@@ -1,5 +1,9 @@
 # Geiger
 
+![The Geiger dashboard in dark mode. A desktop window shows the live dose rate of 0.099 µSv/h, a tick for each detected particle over the last two minutes, and a week of history with a tooltip on a rain-driven bump. Two phones show the live reading and the radiation levels table.](docs/dashboard.png)
+
+<sub>Shown with made-up data from <code>geiger demo</code>.</sub>
+
 A logger and dashboard for a GQ GMC-320S Geiger counter, built on
 [pygmc](https://github.com/Wikilicious/pygmc).
 
@@ -40,6 +44,9 @@ From a terminal, the same thing is:
 uv sync
 uv run geiger run
 ```
+
+No counter? `uv run geiger demo` runs the dashboard with a simulated one and 30 days of
+made-up history, in a temporary database that never touches your real one.
 
 ## A typical session
 
@@ -199,6 +206,7 @@ All of these run as `uv run geiger <command>`.
 | `sync` | Copy new records from the counter, set its clock, and exit |
 | `info` | Print the model, firmware, current CPM and µSv/h, calibration, battery, and clock |
 | `set-clock` | Set the counter's clock now. The logger normally does this itself; stop it first |
+| `demo` | Run the dashboard with a simulated counter and made-up history, in a temporary database |
 | `install-agent` / `uninstall-agent` | Optional: keep the logger running in the background at login (launchd) |
 
 Options:
@@ -273,6 +281,15 @@ The dashboard is a static page over a small local API:
 uv run pytest
 ```
 
+To regenerate the image at the top of this README after changing the dashboard, run the
+script below. It needs Google Chrome and Node 22 or later, starts `geiger demo`, captures
+the page in dark mode at 2x, and frames the captures with
+`scripts/readme-image/collage.html`.
+
+```bash
+node scripts/readme-image/make.mjs
+```
+
 | Path | Contents |
 |---|---|
 | `geiger/device.py` | Serial access through pygmc, and the device quirks |
@@ -280,5 +297,7 @@ uv run pytest
 | `geiger/history.py` | Parsing the counter's memory and mapping its clock to real time |
 | `geiger/store.py` | SQLite schema, gap-only import, chart series and stats |
 | `geiger/calibration.py` | CPM to µSv/h, matching pygmc's conversion |
+| `geiger/demo.py` | The simulated counter and made-up history behind `geiger demo` |
 | `geiger/server.py`, `geiger/cli.py` | HTTP API and command line |
 | `geiger/static/` | The dashboard (plain HTML, CSS and JavaScript, no build step) |
+| `scripts/readme-image/` | Generates `docs/dashboard.png` |

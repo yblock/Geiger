@@ -1,0 +1,177 @@
+<!doctype html>
+<!-- Frames the dashboard captures for docs/dashboard.png; make.mjs renders it at 2x. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Geiger collage</title>
+<style>
+  :root {
+    --backdrop: #0a0d0e;
+    --page: #111516;
+    --bezel: #1b2022;
+    --chrome: #191e20;
+    --line: rgba(255, 255, 255, 0.09);
+    --muted: #8d9597;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { margin: 0; }
+
+  body {
+    position: relative;
+    width: 1740px;
+    height: 940px;
+    overflow: hidden;
+    background: var(--backdrop);
+    font: 500 13px/1 -apple-system, system-ui, sans-serif;
+    color: var(--muted);
+  }
+
+  /* chart-recorder paper, fading out toward the edges */
+  .paper {
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+    background-size: 36px 36px;
+    -webkit-mask-image: radial-gradient(ellipse 70% 75% at 42% 48%, #000 35%, transparent 100%);
+    mask-image: radial-gradient(ellipse 70% 75% at 42% 48%, #000 35%, transparent 100%);
+  }
+
+  .glow {
+    position: absolute;
+    left: 140px;
+    top: 160px;
+    width: 900px;
+    height: 600px;
+    background: radial-gradient(closest-side, rgba(57, 135, 229, 0.12), transparent);
+  }
+
+  .window {
+    position: absolute;
+    left: 56px;
+    top: 72px;
+    width: 1040px;
+    overflow: hidden;
+    border-radius: 12px;
+    background: var(--page);
+    box-shadow:
+      0 0 0 1px var(--line),
+      0 40px 90px rgba(0, 0, 0, 0.6),
+      0 10px 28px rgba(0, 0, 0, 0.4);
+  }
+
+  .titlebar {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 38px;
+    padding: 0 16px;
+    background: var(--chrome);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .light { width: 12px; height: 12px; border-radius: 50%; }
+  .light.close { background: #ff5f57; }
+  .light.min { background: #febc2e; }
+  .light.max { background: #28c840; }
+
+  .address {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    height: 24px;
+    padding: 0 16px;
+    border-radius: 7px;
+    background: var(--page);
+    font-size: 12.5px;
+    letter-spacing: 0.01em;
+  }
+
+  img { display: block; width: 100%; }
+
+  .phone {
+    position: absolute;
+    width: 312px;
+    padding: 11px;
+    border-radius: 50px;
+    background: var(--bezel);
+    box-shadow:
+      inset 0 0 0 1px rgba(255, 255, 255, 0.14),
+      0 0 0 1px rgba(0, 0, 0, 0.6),
+      0 40px 90px rgba(0, 0, 0, 0.65),
+      0 10px 28px rgba(0, 0, 0, 0.4);
+  }
+
+  .phone.reading { left: 1124px; top: 56px; }
+  .phone.levels { left: 1396px; top: 248px; }
+
+  .screen {
+    position: relative;
+    height: 620px;
+    overflow: hidden;
+    border-radius: 39px;
+    background: var(--page);
+  }
+
+  .status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 44px;
+    padding: 6px 26px 0 32px;
+    color: #edf1f0;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .island {
+    position: absolute;
+    top: 11px;
+    left: 50%;
+    width: 92px;
+    height: 26px;
+    border-radius: 13px;
+    background: #000;
+    transform: translateX(-50%);
+  }
+</style>
+</head>
+<body>
+  <div class="paper"></div>
+  <div class="glow"></div>
+
+  <div class="window">
+    <div class="titlebar">
+      <span class="light close"></span><span class="light min"></span><span class="light max"></span>
+      <span class="address">
+        <svg width="10" height="12" viewBox="0 0 10 12" aria-hidden="true"><rect x="0.75" y="5" width="8.5" height="6.25" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2.75 5V3.5a2.25 2.25 0 0 1 4.5 0V5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+        localhost:8320
+      </span>
+    </div>
+    <img src="desktop.png" alt="">
+  </div>
+
+  <div class="phone reading">
+    <div class="screen">
+      <div class="island"></div>
+      <div class="status"><span>9:41</span><svg width="27" height="13" viewBox="0 0 27 13" aria-hidden="true"><rect x="0.5" y="0.5" width="22" height="12" rx="3.5" fill="none" stroke="#edf1f0" stroke-opacity="0.5"/><rect x="2.5" y="2.5" width="15" height="8" rx="2" fill="#edf1f0"/><path d="M24.5 4.5v4a2 2 0 0 0 0-4z" fill="#edf1f0" fill-opacity="0.5"/></svg></div>
+      <img src="phone-reading.png" alt="">
+    </div>
+  </div>
+
+  <div class="phone levels">
+    <div class="screen">
+      <div class="island"></div>
+      <div class="status"><span>9:41</span><svg width="27" height="13" viewBox="0 0 27 13" aria-hidden="true"><rect x="0.5" y="0.5" width="22" height="12" rx="3.5" fill="none" stroke="#edf1f0" stroke-opacity="0.5"/><rect x="2.5" y="2.5" width="15" height="8" rx="2" fill="#edf1f0"/><path d="M24.5 4.5v4a2 2 0 0 0 0-4z" fill="#edf1f0" fill-opacity="0.5"/></svg></div>
+      <img src="phone-levels.png" alt="">
+    </div>
+  </div>
+</body>
+</html>

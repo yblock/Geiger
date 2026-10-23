@@ -101,15 +101,15 @@ class UnpluggedMidStream:
         self.closed = True
 
 
-def test_pulling_the_cable_is_an_ordinary_disconnect(tmp_path, monkeypatch, caplog):
+def test_pulling_the_cable_is_an_ordinary_disconnect(tmp_path, caplog):
     made = []
 
     def connect(port):
         made.append(UnpluggedMidStream(port))
         return made[-1]
 
-    monkeypatch.setattr("geiger.logger.Counter", connect)
     logger = make_logger(tmp_path)
+    logger.connect = connect
     logger.start()
     deadline = time.time() + 5
     while logger.status()["state"] != "offline" and time.time() < deadline:
