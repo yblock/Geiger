@@ -30,6 +30,7 @@ CONTENT_TYPES = {
 STEPS = (1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600,
          43200, 86400, 172800, 604800)
 MAX_POINTS = 2000
+MIN_CHART_SPAN = 120  # seconds; a fitted chart never zooms in further than this
 
 
 def pick_step(span: int, points: int) -> int:
@@ -131,17 +132,26 @@ class Handler(BaseHTTPRequestHandler):
         start, end = self._range(query)
         points = min(int(query.get("points", 600)), MAX_POINTS)
         tz = int(query.get("tz", 0))
-        step = pick_step(end - start, points)
         store = self.server.store
         bounds = store.bounds()
         # an "all time" request starts at the epoch; measure coverage from the first data
         covered_from = max(start, bounds[0]) if bounds else start
+        # fit=1 narrows the chart to the readings inside the range, so a month with a
+        # day of data fills the width at a resolution suited to that day
+        chart_start, chart_end = start, end
+        extent = store.extent(start, end) if query.get("fit") == "1" else None
+        if extent:
+            chart_start, chart_end = extent
+            chart_start = max(start, min(chart_start, chart_end - MIN_CHART_SPAN))
+        step = pick_step(chart_end - chart_start, points)
         self._json(
             {
-                "start": start,
-                "end": end,
+                "start": chart_start,
+                "end": chart_end,
+                "range_start": start,
+                "range_end": end,
                 "step": step,
-                "points": store.rate_series(start, end, step, tz),
+                "points": store.rate_series(chart_start, chart_end, step, tz),
                 "summary": store.summary(covered_from, end, store.calibration()),
             }
         )

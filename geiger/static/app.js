@@ -422,7 +422,7 @@ async function loadSeries() {
   const points = Math.max(120, Math.min(1500, Math.round(width / 1.5)));
   $("chart-wrap").classList.add("loading");
   try {
-    const res = await fetch(`/api/series?start=${start}&end=${end}&points=${points}&tz=${tzOffset()}`);
+    const res = await fetch(`/api/series?start=${start}&end=${end}&points=${points}&tz=${tzOffset()}&fit=1`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (id !== app.seriesRequest) return; // a newer request replaced this one
@@ -575,6 +575,11 @@ function setCaption(showAlarm, alarm) {
   let text = data.step < 60
     ? `Rolling one-minute rate in ${unit}, as the counter displays it.`
     : `Average ${unit} per ${fmtDuration(data.step)}; the shaded band spans the quietest to the busiest minute.`;
+  // the server fits the chart to the readings; say so when that left out part of the range
+  const zoomed = data.start - data.range_start > 60 || data.range_end - data.end > 60;
+  if (zoomed && chart.pts.length) {
+    text += ` Zoomed to the readings in this range, ${fmtWhen(data.start)} to ${fmtWhen(data.end)}.`;
+  }
   const alarmUsv = app.status?.config?.Alarm ? app.status.config.AlarmValue_uSv : null;
   if (alarmUsv != null && !showAlarm && chart.pts.length) {
     text += ` The counter's alarm level (${fmtLevel(alarmUsv)} µSv/h) is far above this range.`;

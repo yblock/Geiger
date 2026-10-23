@@ -171,6 +171,20 @@ class Store:
         ).fetchone()[0]
         return first, last
 
+    def extent(self, start: int, end: int) -> tuple[int, int] | None:
+        """(first start, last end) of the intervals starting in [start, end), or None."""
+        db = self._db()
+        first = db.execute(
+            "SELECT ts FROM counts WHERE ts >= ? AND ts < ? ORDER BY ts LIMIT 1", (start, end)
+        ).fetchone()
+        if first is None:
+            return None
+        last = db.execute(
+            "SELECT ts + seconds FROM counts WHERE ts >= ? AND ts < ? ORDER BY ts DESC LIMIT 1",
+            (start, end),
+        ).fetchone()
+        return first[0], min(last[0], end)
+
     def recent(self, since: int) -> list[tuple[int, int, int]]:
         """(ts, seconds, count) rows starting at or after `since`."""
         return self._db().execute(

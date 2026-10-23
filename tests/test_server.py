@@ -71,6 +71,26 @@ def test_series_and_summary(server):
     assert data["summary"]["dose_usv"] > 0
 
 
+def test_fit_narrows_the_chart_to_the_readings(server):
+    month = f"/api/series?start={server.now - 30 * 86400}&end={server.now}&points=600"
+    wide = json.loads(get(server, month)[2])
+    fitted = json.loads(get(server, month + "&fit=1")[2])
+    assert wide["start"] == server.now - 30 * 86400
+    # five minutes of data: the chart spans just those, at per-second resolution
+    assert fitted["start"] == server.now - 300
+    assert fitted["end"] == server.now
+    assert fitted["step"] < wide["step"]
+    assert fitted["range_start"] == server.now - 30 * 86400
+    # the stats still describe the whole selected range
+    assert fitted["summary"] == wide["summary"]
+
+
+def test_fit_keeps_an_empty_range_as_asked(server):
+    path = f"/api/series?start={server.now - 7200}&end={server.now - 3600}&fit=1"
+    data = json.loads(get(server, path)[2])
+    assert (data["start"], data["end"], data["points"]) == (server.now - 7200, server.now - 3600, [])
+
+
 def test_recent_and_export(server):
     _, _, body = get(server, "/api/recent?seconds=60")
     assert 55 <= len(json.loads(body)) <= 61
